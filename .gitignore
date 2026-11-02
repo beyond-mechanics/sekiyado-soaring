@@ -1,0 +1,6 @@
+node_modules/
+dist/
+app/renderer.js
+app/renderer.js.map
+assets/data/.tilecache/
+assets/data-hires/

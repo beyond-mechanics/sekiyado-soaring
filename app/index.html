@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' app:; img-src 'self' app: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' app:; worker-src blob:">
+<title>SEKIYADO SOARING — 関宿グライダーSIM</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="menu">
+<canvas id="scene" aria-label="関宿滑空場の3Dフライト画面"></canvas>
+
+<header id="topbar">
+  <div class="brand">⌁ <span>SEKIYADO <b>SOARING</b><small>関宿グライダーシミュレーター · DESKTOP EDITION</small></span></div>
+  <div class="top">
+    <span id="fps" class="live"></span>
+    <button id="infoBtn" title="操作方法">? 操作</button>
+    <button id="pauseBtn" hidden>一時停止 [P]</button>
+    <button id="menuTopBtn" hidden>メニュー [Esc]</button>
+  </div>
+</header>
+
+<section id="start" class="panel welcome">
+  <div class="eyebrow">36.0157° N / 139.8166° E · RWY 18/36</div>
+  <h1>風を読んで、関宿の空へ。</h1>
+  <p class="lead">国土地理院の航空写真と標高、遠くの筑波山や富士山まで再現した、関宿滑空場のフライトシミュレーター。</p>
+  <div class="grid2">
+    <label>機体<select id="aircraft">
+      <option value="dimona">SUPER DIMONA TC100 · モーターグライダー</option>
+      <option value="glider">複座練習グライダー · エンジンなし</option>
+    </select></label>
+    <label>フライト<select id="mode">
+      <option value="powered">自力離陸 · エンジンで滑走路から</option>
+      <option value="tow">航空機曳航 · 滑走路から離陸</option>
+      <option value="free">自由滑空 · 上空600mから</option>
+      <option value="approach">着陸アプローチ · RWY 36</option>
+    </select></label>
+  </div>
+  <p class="aircraftNote" id="aircraftNote"></p>
+  <details open><summary>天候と時刻</summary>
+  <div class="grid2">
+    <label>風向<select id="windDir">
+      <option value="0">北</option><option value="45">北東</option><option value="90">東</option><option value="135">南東</option>
+      <option value="180">南</option><option value="225">南西</option><option value="270">西</option><option value="315">北西</option>
+    </select></label>
+    <label>風速 <output id="windSpeedOut">3 m/s</output><input id="windSpeed" type="range" min="0" max="12" step="1" value="3"></label>
+    <label>上昇気流<select id="thermals">
+      <option value="0">なし</option><option value="0.7">弱い</option><option value="1" selected>普通</option><option value="1.5">強い</option>
+    </select></label>
+    <label>乱気流<select id="turbulence">
+      <option value="0">なし</option><option value="0.5" selected>弱い</option><option value="1">普通</option><option value="1.8">強い</option>
+    </select></label>
+    <label>時刻 <output id="timeOut">12:00</output><input id="timeOfDay" type="range" min="6" max="17.5" step="0.25" value="12"></label>
+    <label>視程<select id="visibility">
+      <option value="25000">霞（25 km）</option><option value="60000" selected>良好（60 km）</option><option value="120000">快晴（120 km）</option>
+    </select></label>
+  </div></details>
+  <details><summary>表示と操縦</summary>
+  <div class="grid2">
+    <label>画質<select id="quality">
+      <option value="0">軽量</option><option value="1">標準</option><option value="2" selected>高</option><option value="3">最高</option>
+    </select></label>
+    <label>操縦アシスト<select id="assist">
+      <option value="1" selected>あり（手を離すと翼が水平に）</option><option value="0">なし（実機に近い）</option>
+    </select></label>
+    <label>上昇気流ガイド<select id="guide">
+      <option value="1" selected>表示する</option><option value="0">表示しない（雲を頼りに）</option>
+    </select></label>
+    <label>単位<select id="units">
+      <option value="metric" selected>km/h · m</option><option value="aviation">kt · ft</option>
+    </select></label>
+  </div></details>
+  <button class="primary" id="fly" disabled>地形を読み込み中…</button>
+  <div class="hint">矢印キー / ジョイスティック / ゲームパッドで操縦 · F11 全画面</div>
+  <div class="version">DESKTOP EDITION · v5.0 · <span id="dataInfo"></span></div>
+</section>
+
+<div id="loading"><div class="bar"><i id="loadBar"></i></div><span id="loadText">地形を準備しています</span></div>
+
+<div id="flightUI" hidden>
+  <div id="notice" role="status"></div>
+  <section id="thermalHud" class="hudbox"><small>THERMAL / 上昇気流</small><b id="thermalLabel">上昇気流を探そう</b>
+    <div class="thermalNumbers"><span>空気の上昇 <strong id="airLift">+0.0</strong> m/s</span><span>総エネルギー昇降 <strong id="netLift">−0.8</strong> m/s</span></div>
+    <div class="thermalBar"><i id="thermalFill"></i></div></section>
+  <section id="towHud" class="hudbox" hidden><small>AEROTOW · 自動追従</small><b id="towStage">滑走・加速中</b><span id="towHelp"></span><progress id="towProgress" max="600" value="0"></progress></section>
+  <section id="motorHud" class="hudbox" hidden><small>ENGINE · ROTAX 912</small>
+    <div class="motorRow"><b id="engineState">OFF</b><span id="rpm">0 rpm</span></div>
+    <div class="throttleBar"><i id="throttleFill"></i></div><span class="sub">スロットル <output id="throttleValue">0%</output> · E 始動/停止 · W/S 出力</span></section>
+  <aside class="mapPanel"><div><span>LOCAL MAP</span><span>N ↑</span></div><canvas id="map" width="260" height="260"></canvas><small id="distance">—</small></aside>
+  <div class="instruments">
+    <div><small>AIRSPEED</small><b id="speed">0</b><span id="speedUnit">km/h</span></div>
+    <div><small>ALTITUDE AGL</small><b id="alt">0</b><span id="altUnit">m</span></div>
+    <div><small>TE VARIO</small><b id="vario">0.0</b><span>m/s</span></div>
+    <div><small>HEADING</small><b id="hdg">000°</b><span id="trimInfo">TRIM 90</span></div>
+    <div class="horizon"><canvas id="attitude" width="120" height="120"></canvas></div>
+  </div>
+  <div id="statusLine"></div>
+</div>
+
+<section id="result" class="panel result" hidden><div class="eyebrow">FLIGHT COMPLETE</div><h2 id="resultTitle">着陸</h2><p id="resultText"></p>
+  <div class="row"><button id="again" class="primary">もう一度飛ぶ</button><button id="menuBtn">フライト設定へ</button></div></section>
+
+<section id="pauseMenu" class="panel result" hidden><div class="eyebrow">PAUSED</div><h2>一時停止中</h2>
+  <div class="row"><button id="resumeBtn" class="primary">再開 [P]</button><button id="restartBtn">飛び直す</button><button id="toMenuBtn">メニュー</button></div></section>
+
+<dialog id="info"><button id="closeInfo" class="close">閉じる ×</button>
+  <div class="eyebrow">HOW TO FLY</div><h2>操作方法</h2>
+  <table class="keys">
+    <tr><td>← →</td><td>エルロン（バンク）。地上ではラダー／前輪操向</td></tr>
+    <tr><td>↑ ↓</td><td>昇降舵。↓で機首上げ（迎角が増え、速度が落ちる）。離すとトリム速度へ戻ります</td></tr>
+    <tr><td>Z / X</td><td>ラダー（旋回の微調整・地上の方向修正）</td></tr>
+    <tr><td>[ ]</td><td>トリム速度を下げる／上げる（5 km/h刻み）</td></tr>
+    <tr><td>B</td><td>エアブレーキ（スポイラー）＋車輪ブレーキ</td></tr>
+    <tr><td>E · W / S</td><td>エンジン始動／停止 · スロットル増減（モーターグライダー）</td></tr>
+    <tr><td>R</td><td>曳航索の切り離し</td></tr>
+    <tr><td>C</td><td>視点切替：追尾 → コックピット → 外部（マウスで回転） → 地上</td></tr>
+    <tr><td>右ドラッグ / ホイール</td><td>視点を見回す / ズーム。ダブルクリックで正面に戻す</td></tr>
+    <tr><td>H</td><td>HUD 表示切替</td></tr>
+    <tr><td>P / Space</td><td>一時停止 · Esc メニュー · F11 全画面</td></tr>
+  </table>
+  <h3>ジョイスティック・ゲームパッド</h3>
+  <p>接続すると自動で認識します。左スティック（ジョイスティックのX/Y軸）で操縦、右トリガーまたはスロットル軸で出力、Aボタン＝エアブレーキ、Bボタン＝索切り離し、Yボタン＝視点切替です。</p>
+  <h3>飛行モデル</h3>
+  <p>揚力係数・抗力極曲線・機体重量・翼面積から力を計算する質点モデルです。スティックは迎角を指示し、手を離すとトリム速度に戻ります。失速、バンク時の沈下増加、高度による風速変化、乱気流、上昇気流の周囲の下降気流、風による上昇気流の傾きを再現します。昇降計は総エネルギー補正（TE）付きで、機首の上げ下げだけでは反応しにくくなっています。</p>
+  <p>簡易化した飛行モデル・近似3Dモデルです。<strong>実機訓練や航法には使用できません。</strong></p>
+  <h3>出典</h3>
+  <p>国土地理院 地理院タイル（全国最新写真・DEM5A・DEM10B）を加工。遠景の標高は AWS Terrain Tiles（Mapzen terrarium、SRTM・GMTED 等に由来）を加工。関宿滑空場「ご利用の手引き」を参考。Three.js（MIT License）。</p>
+  <p class="dim" id="terrainInfo"></p>
+</dialog>
+<script src="renderer.js"></script>
+</body>
+</html>

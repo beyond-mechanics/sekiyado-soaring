@@ -1,0 +1,82 @@
+{
+  "name": "sekiyado-soaring",
+  "version": "5.0.0",
+  "description": "関宿グライダーシミュレーター デスクトップ版",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs --minify",
+    "dev": "node scripts/build.mjs && electron .",
+    "start": "electron .",
+    "fetch-gsi": "node scripts/fetch-gsi.mjs",
+    "build-far-dem": "node scripts/build-far-dem.mjs",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --universal --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never"
+  },
+  "keywords": [],
+  "author": "航空研究会",
+  "license": "UNLICENSED",
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
+    "three": "^0.170.0"
+  },
+  "type": "module",
+  "productName": "SEKIYADO SOARING",
+  "build": {
+    "appId": "jp.sekiyado.soaring",
+    "productName": "SEKIYADO SOARING",
+    "artifactName": "SekiyadoSoaring-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "app/index.html",
+      "app/style.css",
+      "app/renderer.js",
+      "assets/data/*.json",
+      "assets/data/*.jpg",
+      "assets/data/*.bin",
+      "assets/data-hires/**",
+      "!assets/data-hires/.cache/**",
+      "build/icon.png",
+      "package.json",
+      "README.md",
+      "THIRD_PARTY_NOTICES.md",
+      "licenses/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "関宿グライダーSIM",
+      "language": "1041",
+      "installerLanguages": [
+        "ja_JP"
+      ]
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.simulation-games",
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Game",
+      "icon": "build/icon.png"
+    },
+    "publish": []
+  }
+}
