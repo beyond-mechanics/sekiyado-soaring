@@ -13,6 +13,7 @@ jobs:
       matrix:
         blender: ['4.2.3', '5.2.2']
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Install Blender ${{ matrix.blender }} and ffmpeg
@@ -35,7 +36,7 @@ jobs:
           (while sleep 20; do echo "[mem] $(free -m | awk '/Mem/{print $3 " MB used"}; /Swap/{print "swap " $3 " MB"}' | tr '\n' ' ')"; done) &
           python3 scripts/render_and_ai_v2v.py --blender "$RUNNER_TEMP/blender/blender" \
             --flight exports/test_lowpass_5s.json --out renders/test5s --duration-sec 5 \
-            --width 320 --height 180 --samples 4 --skip-far --grass-density 1 --backend dry-run 2>&1 | tee render.log
+            --width 320 --height 180 --samples 4 --skip-far --grass-density 0.05 --backend dry-run 2>&1 | tee render.log
           grep -E "Traceback|Error" render.log && grep -B2 -A8 "Traceback" render.log || true
       - name: Check outputs
         run: |
