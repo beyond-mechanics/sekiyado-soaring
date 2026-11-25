@@ -1,0 +1,33 @@
+{
+  "source": "Poly Haven (https://polyhaven.com)",
+  "resolution": "1k",
+  "materials": {
+    "grass": {
+      "id": "aerial_grass_rock",
+      "name": "Aerial Grass Rock",
+      "authors": {
+        "Rob Tuytel": "All"
+      },
+      "license": "CC0 1.0",
+      "url": "https://polyhaven.com/a/aerial_grass_rock"
+    },
+    "soil": {
+      "id": "brown_mud_leaves_01",
+      "name": "Brown Mud Leaves 01",
+      "authors": {
+        "Rob Tuytel": "All"
+      },
+      "license": "CC0 1.0",
+      "url": "https://polyhaven.com/a/brown_mud_leaves_01"
+    },
+    "asphalt": {
+      "id": "asphalt_02",
+      "name": "Asphalt 02",
+      "authors": {
+        "Rob Tuytel": "All"
+      },
+      "license": "CC0 1.0",
+      "url": "https://polyhaven.com/a/asphalt_02"
+    }
+  }
+}
