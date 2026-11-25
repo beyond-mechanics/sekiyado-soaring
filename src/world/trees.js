@@ -25,7 +25,7 @@ function paintAtlas() {
   for (let i = 0; i < 520; i++) {
     const a = rnd() * 6.28, r = 112 * Math.sqrt(rnd()), x = 128 + Math.cos(a) * r, y = 128 + Math.sin(a) * r * 0.92;
     g.save(); g.translate(x, y); g.rotate(a + (rnd() - 0.5) * 1.4);
-    g.fillStyle = hsl(78 + rnd() * 22, 24 + rnd() * 20, 34 + (1 - y / 256) * 22 + rnd() * 12);
+    g.fillStyle = hsl(60 + rnd() * 30, 8 + rnd() * 10, 40 + (1 - y / 256) * 24 + rnd() * 12);  // 色はインスタンスで付けるので、ほぼ無彩色
     g.beginPath(); g.ellipse(0, 0, 7 + rnd() * 5, 3.2 + rnd() * 2.2, 0, 0, 6.28); g.fill();
     g.restore();
   }
@@ -190,6 +190,41 @@ function bambooClump(culms, leavesPer, seg, size) {
   return b.build();
 }
 
+// 落葉した広葉樹：幹から枝を 3 段に分けて伸ばす。残った枯れ葉を少しだけ板で付ける
+function bareTree(levels, mains, seg, leftovers) {
+  const b = new Builder(), c = V(0, 0.62, 0), r = V(0.34, 0.27, 0.34), nf = ellN(c, r);
+  b.tube([V(0, 0, 0), V(0.01, 0.25, 0), V(0, 0.45, 0.01)], 0.03, 0.02, seg, 'bark');
+  const grow = (p, dir, len, rad, depth) => {
+    const e = p.clone().addScaledVector(dir, len), m = p.clone().addScaledVector(dir, len * 0.5).add(V((rnd() - 0.5) * len * 0.15, 0, (rnd() - 0.5) * len * 0.15));
+    b.tube([p, m, e], rad, rad * 0.6, Math.max(3, seg - (levels - depth)), 'bark');
+    if (depth <= 1) return;
+    const kids = depth === levels ? 3 : 2 + (rnd() < 0.5 ? 1 : 0);
+    for (let k = 0; k < kids; k++) {
+      const t = 0.55 + 0.45 * rnd(), q = p.clone().lerp(e, t);
+      const nd = dir.clone().add(V(rnd() - 0.5, rnd() * 0.5, rnd() - 0.5).multiplyScalar(1.1)).normalize();
+      grow(q, nd, len * (0.5 + rnd() * 0.15), rad * 0.55, depth - 1);
+    }
+  };
+  for (let k = 0; k < mains; k++) {
+    const a = k / mains * 6.28 + rnd() * 0.8, y0 = 0.3 + rnd() * 0.18;
+    grow(V(0, y0, 0), V(Math.cos(a) * 0.7, 0.75 + rnd() * 0.3, Math.sin(a) * 0.7).normalize(), 0.3 + rnd() * 0.08, 0.014, levels);
+  }
+  for (let k = 0; k < leftovers; k++) {
+    let d; do { d = V(rnd() * 2 - 1, rnd() * 2 - 0.7, rnd() * 2 - 1); } while (d.lengthSq() > 1 || d.lengthSq() < 0.1);
+    const p = V(c.x + d.x * r.x * 0.8, c.y + d.y * r.y * 0.8, c.z + d.z * r.z * 0.8), [u, v] = randomPerp(d.normalize());
+    b.quad(p, u.multiplyScalar(0.07), v.multiplyScalar(0.07), 'broad', nf);
+  }
+  return b.build();
+}
+
+// 季節：落葉樹の色づき（0〜1）と、葉を落とした木の割合。シミュレーターの日付（今日）で決める
+export function seasonOf(date = new Date()) {
+  const d = (date.getMonth() + date.getDate() / 31);   // 0 = 1 月初め
+  const autumn = Math.max(0, 1 - Math.abs(d - 10.6) / 1.4);              // 10 月中旬〜12 月上旬に色づく（11 月下旬が盛り）
+  const bare = d < 3.2 ? 0.8 : d < 3.8 ? 0.8 * (3.8 - d) / 0.6 : d > 10.4 ? Math.min(0.8, (d - 10.4) / 1.6 * 0.8) : 0;
+  return { autumn, bare };
+}
+
 // quality 0（ノートPC）〜 3（最高）。near は近く、far は遠く用の簡略形
 export function makeTreeKit(quality, env) {
   seed = 7771;
@@ -197,7 +232,9 @@ export function makeTreeKit(quality, env) {
   const geos = {
     broad: { near: broadTree([20, 28, 40, 54][q], [2, 3, 4, 5][q], [4, 5, 6, 7][q], [0.16, 0.14, 0.13, 0.13][q]), far: broadTree(14, 0, 4, 0.18) },
     conifer: { near: sugiTree([18, 24, 32, 42][q], [4, 5, 6, 6][q], 1), far: sugiTree(12, 4, 1.3) },
-    bamboo: { near: bambooClump([4, 6, 7, 9][q], [4, 6, 7, 8][q], [3, 4, 4, 5][q], 1), far: bambooClump(3, 3, 3, 1.6) }
+    bamboo: { near: bambooClump([4, 6, 7, 9][q], [4, 6, 7, 8][q], [3, 4, 4, 5][q], 1), far: bambooClump(3, 3, 3, 1.6) },
+    // 遠くの裸木は、枝先の細かさを薄い板（茶色に染めた葉の板）で代わりに見せる
+    bare: { near: bareTree([2, 3, 3, 3][q], [3, 4, 5, 5][q], [3, 4, 4, 5][q], [3, 4, 6, 8][q]), far: broadTree(8, 3, 3, 0.15) }
   };
   const map = paintAtlas();
   const mat = new THREE.MeshStandardMaterial({ map, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.9 });
@@ -247,9 +284,15 @@ export function makeTreeKit(quality, env) {
 }
 
 // 樹種ごとの葉色（sRGB の HSL）と樹高
-export function treeLook(kind, rand, col) {
+const AUTUMN = [[0.11, 0.55, 0.42], [0.08, 0.5, 0.36], [0.06, 0.45, 0.32], [0.13, 0.4, 0.4], [0.2, 0.25, 0.3]];  // 黄・橙・茶・黄土・くすんだ緑
+export function treeLook(kind, rand, col, season = { autumn: 0 }) {
+  if (kind === 'bare') return col.setHSL(0.07 + rand() * 0.04, 0.3 + rand() * 0.15, 0.28 + rand() * 0.08);  // 残った枯れ葉
+  if (kind === 'broad' && season.autumn > 0 && rand() < season.autumn * 0.85) {
+    const [h, sat, l] = AUTUMN[Math.floor(rand() * AUTUMN.length)];
+    return col.setHSL(h + (rand() - 0.5) * 0.02, sat * (0.85 + rand() * 0.3), l * (0.85 + rand() * 0.25));
+  }
   if (kind === 'conifer') col.setHSL(0.27 + rand() * 0.05, 0.22 + rand() * 0.12, 0.26 + rand() * 0.07);
-  else if (kind === 'bamboo') col.setHSL(0.19 + rand() * 0.04, 0.35 + rand() * 0.15, 0.42 + rand() * 0.08);
-  else col.setHSL(0.2 + rand() * 0.07, 0.22 + rand() * 0.2, 0.27 + rand() * 0.09);
+  else if (kind === 'bamboo') col.setHSL(0.2 + rand() * 0.04, 0.3 + rand() * 0.12, 0.33 + rand() * 0.07);
+  else col.setHSL(0.22 + rand() * 0.06, 0.38 + rand() * 0.2, 0.25 + rand() * 0.08);
   return col;
 }

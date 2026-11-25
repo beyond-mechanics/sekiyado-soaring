@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { RUNWAY_HEADING, RUNWAY_LENGTH, inRunway } from '../sim/flight.js';
 import { buildOsmBuildings, makeLandUse, fillWoods } from './osm.js';
-import { makeTreeKit, treeLook } from './trees.js';
+import { makeTreeKit, treeLook, seasonOf } from './trees.js';
 
 let seed = 151;
 function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
@@ -100,11 +100,13 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   if (land) trees.push(...fillWoods(land, [16, 11, 8.5, 7][quality], rand, (x, z) => !baseExclude(x, z) && !land.noTree(x, z)).map(t => ({ ...t, wood: true })));
 
   // 樹種：河畔は広葉樹（エノキ・ヤナギなど）、樹林は杉と広葉樹、集落まわりは屋敷林（杉・竹・広葉樹）
+  const season = seasonOf();
   for (const t of trees) {
     const r = rand();
     if (t.wood) t.kind = t.conifer || r < 0.4 ? 'conifer' : r < 0.95 ? 'broad' : 'bamboo';
     else if (distToRiver(sc.river, t.x, t.z) < 150) t.kind = r < 0.85 ? 'broad' : r < 0.92 ? 'bamboo' : 'conifer';
     else t.kind = t.conifer ? 'conifer' : r < 0.16 ? 'bamboo' : 'broad';
+    if (t.kind === 'broad' && rand() < season.bare) t.kind = 'bare';  // 冬は落葉樹の多くが葉を落とす
     if (t.kind === 'bamboo') t.h = 9 + rand() * 6;
     if (t.kind === 'conifer') t.h = Math.max(t.h, 12) * (1.1 + rand() * 0.3);
   }
@@ -119,7 +121,7 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   }
   const chunkMeshes = [], treeRange = [2200, 3500, 5000, 7000][quality];
   for (const list of cells.values()) {
-    for (const kind of ['broad', 'conifer', 'bamboo']) {
+    for (const kind of ['broad', 'bare', 'conifer', 'bamboo']) {
       const sub = list.filter(t => t.kind === kind);
       if (!sub.length) continue;
       const near = new THREE.InstancedMesh(kit.geos[kind].near, kit.mat, sub.length);
@@ -127,7 +129,7 @@ export function buildScenery(scene, data, textures, height, quality, env) {
         const y = height(t.x, t.z), h = t.h, sx = 0.85 + rand() * 0.3;
         obj.position.set(t.x, y - 0.2, t.z); obj.rotation.set((rand() - 0.5) * 0.06, rand() * 6.28, (rand() - 0.5) * 0.06);
         obj.scale.set(h * sx, h, h * (0.85 + rand() * 0.3)); obj.updateMatrix();
-        near.setMatrixAt(i, obj.matrix); near.setColorAt(i, treeLook(kind, rand, col));
+        near.setMatrixAt(i, obj.matrix); near.setColorAt(i, treeLook(kind, rand, col, season));
       });
       const far = new THREE.InstancedMesh(kit.geos[kind].far, kit.mat, sub.length);
       far.instanceMatrix = near.instanceMatrix; far.instanceColor = near.instanceColor;
