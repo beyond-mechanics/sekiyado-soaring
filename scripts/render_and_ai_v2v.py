@@ -61,7 +61,8 @@ def probe_frames(video):
 
 def render_with_blender(args, out):
     script = Path(__file__).resolve().parent / "blender_import_flight.py"
-    cmd = [args.blender, "--background", "--python", script, "--",
+    # --python-exit-code：スクリプトがエラーで止まったら Blender も失敗で終わらせる（既定では成功扱いになる）
+    cmd = [args.blender, "--background", "--python-exit-code", "1", "--python", script, "--",
            "--data-dir", args.data_dir, "--flight", args.flight, "--out", out,
            "--fps", args.fps, "--start-sec", args.start_sec, "--duration-sec", args.duration_sec,
            "--shutter", args.shutter, "--grass-density", args.grass_density,

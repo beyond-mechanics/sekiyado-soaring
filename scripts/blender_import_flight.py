@@ -473,7 +473,7 @@ def setup_render(out_dir, engine, samples, width, height, shutter=0.45):
     fmt = scene.render.image_settings
     if hasattr(fmt, "media_type"):  # Blender 5.x：形式の種類（画像・マルチレイヤー・動画）を先に選ぶ
         fmt.media_type = "MULTI_LAYER_IMAGE"
-        fmt.file_format = "OPEN_EXR"
+        fmt.file_format = "OPEN_EXR_MULTILAYER" if "OPEN_EXR_MULTILAYER" in enum_items(fmt, "file_format") else "OPEN_EXR"
     else:
         fmt.file_format = "OPEN_EXR_MULTILAYER"
     fmt.color_depth = "16"

@@ -73,7 +73,7 @@ def main():
         cx, cz = x - math.sin(heading) * 25, z + math.cos(heading) * 25
         cq = yaw_pitch_roll_quat(heading, math.radians(-6), roll * 0.4)
         frames.append({"t": round(t, 4), "cam": {"pos": [cx, y + 6, cz], "quat": cq, "fov": 60},
-                       "plane": {"pos": [x, y, z], "quat": pq}})
+                       "plane": {"pos": [x, y, z], "quat": pq, "agl": round(agl, 2)}})
 
     # 太陽：16:30 ごろの南西・低め（sunDir は x = 東, y = 上, z = 南）
     el, az = math.radians(12 if args.hour >= 16 else 40), math.radians(240)
