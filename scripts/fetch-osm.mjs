@@ -15,7 +15,12 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.join(HERE, '..', 'assets', 'data');
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => (v.startsWith('--') ? [...a, [v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]] : a), []));
-const ENDPOINT = args.endpoint || 'https://overpass-api.de/api/interpreter';
+// 公開サーバーは混み合うことがあるので、順に試し、だめなら待ち時間を倍にして再試行する（1 回きりの取得用）
+const ENDPOINTS = args.endpoint ? [args.endpoint] : [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+];
 const OUT = path.resolve(args.out || path.join(DATA, 'osm.json'));
 const meta = JSON.parse(fs.readFileSync(path.join(DATA, 'terrain.json'), 'utf8'));
 const detail = JSON.parse(fs.readFileSync(path.join(DATA, 'detail.json'), 'utf8'));
@@ -55,14 +60,27 @@ out body;
 >;
 out skel qt;`;
 
-console.log(`Overpass に問い合わせ中（${bbox}）…`);
-const res = await fetch(ENDPOINT, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'sekiyado-soaring-fetch-osm' },
-  body: 'data=' + encodeURIComponent(query)
-});
-if (!res.ok) throw new Error(`Overpass がエラーを返しました：${res.status} ${await res.text()}`);
-const osm = await res.json();
+async function overpass() {
+  let wait = 15;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    for (const url of ENDPOINTS) {
+      console.log(`Overpass に問い合わせ中（${attempt} 回目、${new URL(url).host}、${bbox}）…`);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'sekiyado-soaring-fetch-osm' },
+          body: 'data=' + encodeURIComponent(query), signal: AbortSignal.timeout(240000)
+        });
+        if (res.ok) return await res.json();
+        console.log(`  ${res.status}：${(await res.text()).split('\n').slice(0, 3).join(' ')}`);
+      } catch (e) { console.log('  接続エラー：', e.message); }
+    }
+    console.log(`  ${wait} 秒待って再試行します`);
+    await new Promise(r => setTimeout(r, wait * 1000)); wait *= 2;
+  }
+  throw new Error('Overpass から取得できませんでした');
+}
+const osm = await overpass();
 
 const nodes = new Map(), ways = new Map();
 for (const e of osm.elements) {
