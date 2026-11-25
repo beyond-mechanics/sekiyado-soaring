@@ -26,7 +26,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p out
-          for f in blender/aircraft/*.py; do
+          for f in blender/aircraft/*.py blender/props/*.py; do
             n=$(basename "$f" .py)
             "$RUNNER_TEMP/blender/blender" -b --factory-startup -P "$f" -- --out out/models --blend "out/$n.blend" \
               --render "out/$n.png" --views front34,side --samples 8 2>&1 | tee -a build.log | grep -E "^\[|Error|Traceback" || true

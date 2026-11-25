@@ -399,7 +399,7 @@ def build(detail=True):
 
 
 # ---------------- プレビュー描画（Cycles） ----------------
-def render_preview(path, root, views=('front34',), res=(1600, 900), samples=96):
+def render_preview(path, root, views=('front34',), res=(1600, 900), samples=96, ground_z=-0.95):
     s = bpy.context.scene
     s.render.engine = 'CYCLES'
     s.cycles.device = 'CPU'
@@ -424,7 +424,7 @@ def render_preview(path, root, views=('front34',), res=(1600, 900), samples=96):
     sun.rotation_euler = (math.radians(52), 0, math.radians(210 - 180))
     gm = C.principled('ground', (0.09, 0.12, 0.06), rough=0.95)
     s.view_settings.exposure = -0.9
-    bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, -0.95))
+    bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, ground_z))
     bpy.context.object.data.materials.append(gm)
     cam = bpy.data.objects.new('cam', bpy.data.cameras.new('cam')); s.collection.objects.link(cam); s.camera = cam
     cam.data.lens = 40

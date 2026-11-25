@@ -229,7 +229,7 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   const water = new THREE.Mesh(wg, wm); water.receiveShadow = true; group.add(water);
 
   return {
-    group, treeCount: trees.length, buildingCount: osmBuildings?.count || 0,
+    group, treeCount: trees.length, buildingCount: osmBuildings?.count || 0, windsock: sock,
     update(camPos, time, windTo, windSpeed) {
       const agl = camPos.y - height(camPos.x, camPos.z);
       const far2 = treeRange * treeRange;

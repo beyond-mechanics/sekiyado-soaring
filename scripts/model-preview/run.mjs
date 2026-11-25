@@ -26,13 +26,14 @@ const port = server.address().port;
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const shots = (process.env.VIEWS || 'front34,side,nose,rear34').split(',');
-const variants = [['before', 'model=procedural'], ['after', 'model=glb'], ['after-lod1', 'model=glb&lod=1']];
+const TYPE = process.env.TYPE || 'glider';   // glider / dimona / props
+const variants = TYPE === 'props' ? [['props', 'scene=props']] : [['before', 'model=procedural'], ['after', 'model=glb'], ['after-lod1', 'model=glb&lod=1']];
 for (const view of shots) for (const [name, qs] of variants) {
   if (name === 'after-lod1' && view !== 'front34') continue;
-  await page.goto(`http://127.0.0.1:${port}/index.html?${qs}&view=${view}${process.env.EXTRA || ''}`);
+  await page.goto(`http://127.0.0.1:${port}/index.html?${qs}&type=${TYPE}&view=${view}${process.env.EXTRA || ''}`);
   const r = await page.waitForFunction(() => window.__done, null, { timeout: 120000 }).then(h => h.jsonValue());
   if (r.error) { console.error(r.error); process.exitCode = 1; continue; }
-  const file = path.join(OUT, `${view}-${name}.png`);
+  const file = path.join(OUT, `${TYPE}-${view}-${name}.png`);
   await page.locator('canvas').screenshot({ path: file });
   console.log(file, `${r.tris.toLocaleString()} tris`);
 }

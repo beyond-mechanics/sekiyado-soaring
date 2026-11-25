@@ -274,3 +274,160 @@ def triangle_count(objects):
                 me.calc_loop_triangles(); n += len(me.loop_triangles)
                 ob.evaluated_get(dg).to_mesh_clear()
     return n
+
+
+# ---------- 機体で共通に使う部品（Super Dimona 以降。Duo Discus T のスクリプトは同じ考え方の旧版） ----------
+def hinge_frame(a, b, up=Vector((0, 1, 0))):
+    """シム座標のヒンジ線 a→b を Blender の回転行列に（ローカル X＝ヒンジ方向）。"""
+    xa = (sim(*b) - sim(*a)).normalized()
+    zb = sim(*up) - sim(0, 0, 0)
+    ya = zb.cross(xa).normalized()
+    za = xa.cross(ya).normalized()
+    return Matrix((xa, ya, za)).transposed().to_4x4()
+
+
+def place_hinged(ob, origin_sim, rot):
+    """メッシュを「原点＝ヒンジ・ローカル軸＝ヒンジ」に付け替える。"""
+    inv = (Matrix.Translation(sim(*origin_sim)) @ rot).inverted()
+    ob.data.transform(inv)
+    ob.matrix_world = Matrix.Translation(sim(*origin_sim)) @ rot
+    return ob
+
+
+def wheel(name, center, r, width, mats, seg=28, ring=10, hub_r=0.46):
+    """タイヤ（トーラス）とハブ。原点＝車軸の中心、ローカル X＝車軸。"""
+    w = torus(name, r * 0.72, r * 0.28, seg, ring, mats['tire'])
+    w.location = sim(*center)
+    hub = cylinder(name + '_hub', r * hub_r, width * 0.9, max(8, seg // 2), mats['metal'], axis='x')
+    hub.parent = w
+    w['control'] = 'wheel'
+    return [w, hub]
+
+
+def canopy_fuselage(name, section, z_list, canopy, kc, kb, mats, face_rule, lines=()):
+    """キャノピーの縁や塗り分けの線がメッシュの辺に一致する胴体。
+    section(z, a) -> Vector(sim)：断面の角度 a（0=右、π/2=上）の点
+    canopy(z) -> 真上から左右へのキャノピー（枠込み）の広がり [rad]、外では 0
+    face_rule(z, phi, kind) -> マテリアル番号。phi は真上からの角度、kind は 'glass'/'frame'/'body'
+    kc / kb：片側のガラス／胴体の分割数。z_list：断面の位置（塗り分けの境目を含めておく）。
+    lines：胴体の帯（ストライプ）の境目の角度 phi。必ず頂点の列が通るので、帯の縁がギザギザにならない。"""
+    grid = []
+    frame_w = 0.07
+    phis_all = []
+    for z in z_list:
+        lim = canopy(z)
+        glass = max(lim - frame_w, 0.0)
+        eps = 0.002
+        phis = [max(glass * k / kc, eps * k) for k in range(kc + 1)]
+        phis.append(max(lim, phis[-1] + eps))
+        p0 = phis[-1]
+        if lines:
+            # 帯の境目は毎断面で同じ番号の頂点にする（番号がずれると面がねじれて縁がギザギザになる）
+            ls = sorted(lines)
+            n_mid = len(ls) - 1
+            n_first = max(1, round((ls[0]) / math.pi * (kb - n_mid)))
+            n_last = max(1, kb - n_mid - n_first)
+            a0 = min(p0, ls[0] - 0.02)
+            phis[-1] = a0 if a0 < p0 else p0
+            body = [phis[-1] + (ls[0] - phis[-1]) * k / n_first for k in range(1, n_first + 1)]
+            body += ls[1:]
+            body += [ls[-1] + (math.pi - ls[-1]) * k / n_last for k in range(1, n_last + 1)]
+            phis += body
+        else:
+            phis += [p0 + (math.pi - p0) * k / kb for k in range(1, kb + 1)]
+        ring = [math.pi / 2 - f for f in phis] + [math.pi / 2 + f for f in reversed(phis[1:-1])]
+        grid.append([sim(*section(z, a)) for a in ring])
+        phis_all.append(phis)
+    half = kc + 1 + kb
+
+    def face_mat(j, i, cb):
+        z = -cb.y
+        if j < 0:
+            return face_rule(z, math.pi / 2, 'cap')
+        k = i if i < half else (2 * half - 1 - i)
+        phi = (phis_all[j][k] + phis_all[j][k + 1]) / 2
+        kind = 'glass' if k < kc else ('frame' if k == kc else 'body')
+        if kind != 'body' and canopy(z) <= 0:
+            kind = 'body'
+        elif kind == 'glass' and canopy(z) <= frame_w:
+            kind = 'frame'
+        return face_rule(z, phi, kind)
+    return grid_mesh(name, grid, closed_u=True, cap_ends=True, mats=mats, face_mat=face_mat)
+
+
+
+def run_object_script(argv, build, name, ground_z=0.0, views='front34,side'):
+    """小物スクリプトの共通の main：LOD0/LOD1 を作り、glb・blend・プレビューを書き出す。
+    build(detail: bool) -> (root, collection)。"""
+    import argparse
+    import os
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--out', default='assets/data/models')
+    ap.add_argument('--blend', default=None)
+    ap.add_argument('--render', default=None)
+    ap.add_argument('--views', default=views)
+    ap.add_argument('--samples', type=int, default=64)
+    a = ap.parse_args(argv)
+    reset_scene()
+    r0, c0 = build(True)
+    r1, c1 = build(False)
+    for o in c1.objects:
+        o.name = o.name.split('.')[0].replace('_lod1', '') + '_LOD1'
+    os.makedirs(a.out, exist_ok=True)
+    export_glb(os.path.join(a.out, f'{name}.glb'), [r0])
+    export_glb(os.path.join(a.out, f'{name}_lod1.glb'), [r1])
+    print(f'[{name}] LOD0 {triangle_count([r0]):,} tris, LOD1 {triangle_count([r1]):,} tris')
+    if a.blend:
+        c1.hide_render = True; c1.hide_viewport = True
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.blend))
+    if a.render:
+        c1.hide_render = True
+        for p in render_props(a.render, tuple(a.views.split(',')), a.samples, ground_z):
+            print(f'[{name}] render', p)
+
+
+def render_props(path, views, samples, ground_z=0.0, res=(1600, 900)):
+    """小物用のプレビュー（被写体の大きさに合わせてカメラを引く）。"""
+    s = bpy.context.scene
+    s.render.engine = 'CYCLES'; s.cycles.device = 'CPU'; s.cycles.samples = samples
+    try:
+        s.cycles.use_denoising = True
+    except Exception:
+        pass
+    s.render.resolution_x, s.render.resolution_y = res
+    s.view_settings.exposure = -0.9
+    w = bpy.data.worlds.new('sky'); s.world = w; w.use_nodes = True
+    nt = w.node_tree; bg = nt.nodes['Background']
+    sky = nt.nodes.new('ShaderNodeTexSky')
+    try:
+        sky.sky_type = 'NISHITA'; sky.sun_elevation = math.radians(38); sky.sun_rotation = math.radians(210)
+    except Exception:
+        pass
+    nt.links.new(sky.outputs['Color'], bg.inputs['Color']); bg.inputs['Strength'].default_value = 0.35
+    sun = bpy.data.objects.new('sun', bpy.data.lights.new('sun', 'SUN')); s.collection.objects.link(sun)
+    sun.data.energy = 4.0; sun.rotation_euler = (math.radians(52), 0, math.radians(30))
+    bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, ground_z))
+    bpy.context.object.data.materials.append(principled('ground', (0.09, 0.12, 0.06), rough=0.95))
+    # 表示中の LOD0 の外接箱
+    bpy.context.view_layer.update()
+    lo, hi = Vector((1e9,) * 3), Vector((-1e9,) * 3)
+    for o in s.objects:
+        if o.type == 'MESH' and o.name != 'Plane' and not o.name.endswith('_LOD1') and all(not c.hide_render for c in o.users_collection):
+            for c in o.bound_box:
+                p = o.matrix_world @ Vector(c)
+                lo = Vector(map(min, lo, p)); hi = Vector(map(max, hi, p))
+    ctr, size = (lo + hi) / 2, (hi - lo).length
+    print('[preview] bbox', tuple(round(v, 2) for v in lo), tuple(round(v, 2) for v in hi))
+    cam = bpy.data.objects.new('cam', bpy.data.cameras.new('cam')); s.collection.objects.link(cam); s.camera = cam
+    cam.data.lens = 40
+    dirs = {'front34': Vector((-0.75, 1.0, 0.35)), 'side': Vector((-1, 0.05, 0.12)), 'rear34': Vector((0.8, -1.0, 0.45)), 'top': Vector((0.05, 0.1, 1))}
+    out = []
+    for v in views:
+        d = dirs[v].normalized()
+        cam.location = ctr + d * size * 1.9
+        cam.rotation_euler = (ctr - cam.location).to_track_quat('-Z', 'Y').to_euler()
+        p = path.replace('.png', f'_{v}.png') if len(views) > 1 else path
+        s.render.filepath = p
+        bpy.ops.render.render(write_still=True)
+        out.append(p)
+    return out
