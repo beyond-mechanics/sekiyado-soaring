@@ -10,10 +10,15 @@ SEKIYADO SOARING のフライト録画 JSON（V / Shift+V で保存）を Blende
     --save-blend ./renders/clip01/scene.blend
 
   # レンダリングまで行う（各フレームを Beauty・Mist・Normal 入りのマルチレイヤー EXR で保存。
-  #   Blender 4.x では Mist・Normal を PNG 連番にも分けて書き出す）
+  #   Blender 4.x では Beauty・Mist・Normal を PNG 連番にも分けて書き出す）
   blender --background --python scripts/blender_import_flight.py -- \
     --data-dir ./assets/data --flight ./clip.json --out ./renders/clip01 \
+    --fps 24 --start-sec 2 --duration-sec 28 --shutter 0.45 \
     --engine CYCLES --samples 32 --width 1280 --height 720 --render
+
+  録画（60 fps）から出力のフレームレート（--fps、既定 24）に合わせてキーを打ち、モーションブラー（--shutter）を掛ける。
+  機体が低く飛んだ区間（対地 140 m 未満）の周りには、Geometry Nodes で草を生やす（--grass-density、0 で無効）。
+  録画から AI 実写化までまとめて行う場合は scripts/render_and_ai_v2v.py を使う。
 
 座標系の変換：
   three.js（x=東, y=上, z=南）→ Blender（x=東, y=北, z=上）
@@ -115,13 +120,13 @@ def build_terrains(data_dir, skip_far=False):
 
     det = detail["heights"]
     dnx = detail["segx"] + 1
-    build_grid_mesh("Terrain_Detail", detail["xmin"], detail["zmin"], detail["width"], detail["depth"],
+    detail_obj = build_grid_mesh("Terrain_Detail", detail["xmin"], detail["zmin"], detail["width"], detail["depth"],
                     detail["segx"], detail["segz"], lambda i, j, x, z: det[j * dnx + i],
                     os.path.join(data_dir, "terrain_detail.jpg"))
 
     far_path = os.path.join(data_dir, "far_dem.bin")
     if skip_far or not os.path.exists(far_path):
-        return
+        return detail_obj, detail
     with open(far_path, "rb") as f:
         buf = f.read()
     far_n = struct.unpack_from("<I", buf, 0)[0]
@@ -139,6 +144,140 @@ def build_terrains(data_dir, skip_far=False):
 
     build_grid_mesh("Terrain_Far", -far_half, -far_half, 2 * far_half, 2 * far_half,
                     far_n // step, far_n // step, far_h, None)
+    return detail_obj, detail
+
+
+# ---------------------------------------------------------------- 低空区間の草（Geometry Nodes）
+
+def gn_socket(node, name, kind=None, output=False):
+    """同名のソケットが型違いで複数あるノード（Random Value など）から、型を指定して取り出す"""
+    socks = node.outputs if output else node.inputs
+    for sk in socks:
+        if sk.name == name and getattr(sk, "enabled", True) and (kind is None or sk.type == kind):
+            return sk
+    for sk in socks:
+        if sk.name == name and (kind is None or sk.type == kind):
+            return sk
+    raise KeyError(f"{node.bl_idname} に {name}（{kind}）がありません")
+
+
+def gn_interface(ng, name, in_out):
+    if hasattr(ng, "interface"):  # Blender 4.0 以降
+        ng.interface.new_socket(name=name, in_out=in_out, socket_type="NodeSocketGeometry")
+    elif in_out == "INPUT":
+        ng.inputs.new("NodeSocketGeometry", name)
+    else:
+        ng.outputs.new("NodeSocketGeometry", name)
+
+
+def make_grass_tuft():
+    """草の株（長さ 30〜48 cm の葉 4 枚）。色は地面の航空写真（インスタンス元の UV）から取る"""
+    verts, faces = [], []
+    for ang, w, h, bend in ((0.0, 0.14, 0.36, 0.08), (2.094, 0.13, 0.44, 0.10), (4.188, 0.12, 0.30, 0.06), (1.047, 0.11, 0.48, 0.12)):
+        b = len(verts)
+        ca, sa = math.cos(ang), math.sin(ang)
+        rx, ry = -sa, ca
+        verts += [(-rx * w / 2, -ry * w / 2, 0.0), (rx * w / 2, ry * w / 2, 0.0),
+                  (-rx * w * 0.32 + ca * bend * 0.35, -ry * w * 0.32 + sa * bend * 0.35, h * 0.52),
+                  (rx * w * 0.32 + ca * bend * 0.35, ry * w * 0.32 + sa * bend * 0.35, h * 0.52),
+                  (ca * bend, sa * bend, h)]
+        faces += [(b, b + 1, b + 3, b + 2), (b + 2, b + 3, b + 4)]
+    mesh = bpy.data.meshes.new("GrassTuft")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new("Asset_GrassTuft", mesh)
+    obj.hide_render = True
+    obj.hide_viewport = True
+    bpy.context.collection.objects.link(obj)
+
+    mat = bpy.data.materials.new("GrassTuft_Mat")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+    return obj, mat, nt, bsdf
+
+
+def attach_low_pass_grass(detail_obj, detail, frames, img_path, density=6.0, radius=170.0):
+    """機体が対地 140 m 未満で飛んだ区間の周り（半径 radius m）だけに草を生やす（全域に生やすと重すぎる）"""
+    if density <= 0:
+        return
+    low = [(fr["plane"]["pos"][0], fr["plane"]["pos"][2]) for fr in frames[::max(1, len(frames) // 300)]
+           if float(fr["plane"].get("agl", 1e9)) < 140.0]
+    if not low:
+        print("[SEKIYADO] 低空区間がないので草は省略")
+        return
+    nx = detail["segx"] + 1
+    r_out2, r_in2 = radius ** 2, (radius * 0.55) ** 2
+    vg = detail_obj.vertex_groups.new(name="GrassMask")
+    for j in range(detail["segz"] + 1):
+        z = detail["zmin"] + j / detail["segz"] * detail["depth"]
+        for i in range(nx):
+            x = detail["xmin"] + i / detail["segx"] * detail["width"]
+            d2 = min((x - px) ** 2 + (z - pz) ** 2 for px, pz in low)
+            if d2 < r_out2:
+                vg.add([j * nx + i], 1.0 if d2 <= r_in2 else (r_out2 - d2) / (r_out2 - r_in2), "REPLACE")
+
+    tuft, mat, nt, bsdf = make_grass_tuft()
+    # 色：インスタンス元（地面）の UV で航空写真を引き、根元を暗く・先を明るくする
+    attr = nt.nodes.new("ShaderNodeAttribute")
+    attr.attribute_type = "INSTANCER"
+    attr.attribute_name = "UVMap"
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    if img_path and os.path.exists(img_path):
+        tex.image = bpy.data.images.load(os.path.abspath(img_path), check_existing=True)
+    nt.links.new(attr.outputs["Vector"], tex.inputs["Vector"])
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(tc.outputs["Generated"], sep.inputs["Vector"])
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].color = (0.35, 0.42, 0.28, 1.0)
+    ramp.color_ramp.elements[1].color = (1.0, 1.1, 0.8, 1.0)
+    nt.links.new(sep.outputs["Z"], ramp.inputs["Fac"])
+    mix = nt.nodes.new("ShaderNodeMixRGB")
+    mix.blend_type = "MULTIPLY"
+    mix.inputs["Fac"].default_value = 0.9
+    nt.links.new(tex.outputs["Color"], mix.inputs["Color1"])
+    nt.links.new(ramp.outputs["Color"], mix.inputs["Color2"])
+    nt.links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.8
+    tuft.data.materials.append(mat)
+
+    ng = bpy.data.node_groups.new("SekiyadoGrass", "GeometryNodeTree")
+    gn_interface(ng, "Geometry", "INPUT")
+    gn_interface(ng, "Geometry", "OUTPUT")
+    N, L = ng.nodes, ng.links
+    gin, gout = N.new("NodeGroupInput"), N.new("NodeGroupOutput")
+    mask = N.new("GeometryNodeInputNamedAttribute")
+    mask.data_type = "FLOAT"
+    gn_socket(mask, "Name").default_value = "GrassMask"
+    dist = N.new("GeometryNodeDistributePointsOnFaces")
+    dist.distribute_method = "RANDOM"
+    gn_socket(dist, "Density").default_value = float(density)
+    gn_socket(dist, "Seed").default_value = 42
+    info = N.new("GeometryNodeObjectInfo")
+    gn_socket(info, "Object").default_value = tuft
+    rot = N.new("FunctionNodeRandomValue")
+    rot.data_type = "FLOAT_VECTOR"
+    gn_socket(rot, "Min", "VECTOR").default_value = (-0.18, -0.18, 0.0)
+    gn_socket(rot, "Max", "VECTOR").default_value = (0.18, 0.18, 6.2831853)
+    scl = N.new("FunctionNodeRandomValue")
+    scl.data_type = "FLOAT"
+    gn_socket(scl, "Min", "VALUE").default_value = 0.75
+    gn_socket(scl, "Max", "VALUE").default_value = 1.6
+    inst = N.new("GeometryNodeInstanceOnPoints")
+    join = N.new("GeometryNodeJoinGeometry")
+    L.new(gn_socket(gin, "Geometry", output=True), gn_socket(dist, "Mesh"))
+    L.new(gn_socket(mask, "Attribute", "VALUE", output=True), gn_socket(dist, "Density Factor"))
+    L.new(gn_socket(dist, "Points", output=True), gn_socket(inst, "Points"))
+    L.new(gn_socket(info, "Geometry", output=True), gn_socket(inst, "Instance"))
+    L.new(gn_socket(rot, "Value", "VECTOR", output=True), gn_socket(inst, "Rotation"))
+    L.new(gn_socket(scl, "Value", "VALUE", output=True), gn_socket(inst, "Scale"))
+    L.new(gn_socket(gin, "Geometry", output=True), join.inputs[0])
+    L.new(gn_socket(inst, "Instances", output=True), join.inputs[0])
+    L.new(gn_socket(join, "Geometry", output=True), gn_socket(gout, "Geometry"))
+    mod = detail_obj.modifiers.new(name="LowPassGrass", type="NODES")
+    mod.node_group = ng
+    print(f"[SEKIYADO] 草：低空区間 {len(low)} 点の周り、密度 {density}/m²")
 
 
 # ---------------------------------------------------------------- 空と太陽
@@ -187,15 +326,27 @@ def setup_world_and_sun(env):
 
 # ---------------------------------------------------------------- カメラと機体の動き
 
-def insert_motion(flight, show_plane=False):
-    scene = bpy.context.scene
-    fps = int(flight.get("fps", 60)) or 60
+def select_frames(flight, start_sec=0.0, duration_sec=0.0):
+    """録画の一部（start_sec から duration_sec 秒）を取り出す。前後 1 コマずつ残して区間の端も補間できるようにする。"""
     frames = flight.get("frames", [])
     if not frames:
         raise SystemExit("frames が空です")
-    scene.render.fps = fps
+    t_end = float(frames[-1]["t"])
+    t0 = max(0.0, min(float(start_sec), t_end))
+    t1 = min(t_end, t0 + float(duration_sec)) if duration_sec > 0 else t_end
+    i0 = max(0, max((i for i, fr in enumerate(frames) if fr["t"] <= t0), default=0))
+    i1 = min(len(frames) - 1, min((i for i, fr in enumerate(frames) if fr["t"] >= t1), default=len(frames) - 1))
+    return frames[i0:i1 + 1], t0, t1
+
+
+def insert_motion(flight, fps=24, start_sec=0.0, duration_sec=0.0, show_plane=False):
+    scene = bpy.context.scene
+    frames, t0, t1 = select_frames(flight, start_sec, duration_sec)
+    # 出力のフレームレート（録画は 60 fps。動画は 24 fps などにしてキーは録画の時刻どおりに打つ）
+    scene.render.fps = int(fps)
+    scene.render.fps_base = 1.0
     scene.frame_start = 1
-    scene.frame_end = 1 + int(math.ceil(float(flight.get("duration", frames[-1]["t"])) * fps))
+    scene.frame_end = 1 + max(1, int(math.floor((t1 - t0) * fps)))
 
     cam_data = bpy.data.cameras.new("FlightCam")
     cam_data.sensor_fit = "VERTICAL"
@@ -236,7 +387,7 @@ def insert_motion(flight, show_plane=False):
         return q
 
     for fr in frames:
-        f = 1.0 + float(fr["t"]) * fps
+        f = 1.0 + (float(fr["t"]) - t0) * fps
         c = fr["cam"]
         cam.location = t2b_pos(*c["pos"])
         cam.rotation_quaternion = continuous("cam", t2b_quat(*c["quat"]))
@@ -250,11 +401,12 @@ def insert_motion(flight, show_plane=False):
         plane.rotation_quaternion = continuous("plane", t2b_quat(*p["quat"]))
         plane.keyframe_insert("location", frame=f)
         plane.keyframe_insert("rotation_quaternion", frame=f)
+    return frames
 
 
 # ---------------------------------------------------------------- レンダー設定
 
-def setup_render(out_dir, engine, samples, width, height):
+def setup_render(out_dir, engine, samples, width, height, shutter=0.45):
     scene = bpy.context.scene
     engines = enum_items(scene.render, "engine")
     if engine == "EEVEE":
@@ -264,6 +416,9 @@ def setup_render(out_dir, engine, samples, width, height):
     scene.render.resolution_percentage = 100
     if "AgX" in enum_items(scene.view_settings, "view_transform"):
         scene.view_settings.view_transform = "AgX"
+    # モーションブラー（シャッターはフレーム間隔に対する割合。0 で無効）
+    scene.render.use_motion_blur = shutter > 0
+    scene.render.motion_blur_shutter = max(0.0, float(shutter))
 
     if engine == "CYCLES":
         scene.cycles.samples = samples
@@ -315,9 +470,21 @@ def setup_render(out_dir, engine, samples, width, height):
         fout.base_path = out_dir
         fout.format.file_format = "PNG"
         fout.file_slots.clear()
-        for i, (slot, src) in enumerate((("beauty/frame_", "Image"), ("mist/frame_", "Mist"), ("normal/frame_", "Normal"))):
+        # 法線は -1〜1 なので、PNG に入れる前に 0〜1 へ移す（そのままだと負の成分が 0 に切られる）
+        sep = nt.nodes.new("CompositorNodeSeparateColor")
+        comb = nt.nodes.new("CompositorNodeCombineColor")
+        nt.links.new(rl.outputs["Normal"], sep.inputs[0])
+        for k in range(3):
+            m = nt.nodes.new("CompositorNodeMath")
+            m.operation = "MULTIPLY_ADD"
+            m.inputs[1].default_value = 0.5
+            m.inputs[2].default_value = 0.5
+            nt.links.new(sep.outputs[k], m.inputs[0])
+            nt.links.new(m.outputs[0], comb.inputs[k])
+        sources = (("beauty/frame_", rl.outputs["Image"]), ("mist/frame_", rl.outputs["Mist"]), ("normal/frame_", comb.outputs[0]))
+        for i, (slot, src) in enumerate(sources):
             fout.file_slots.new(slot)
-            nt.links.new(rl.outputs[src], fout.inputs[i])
+            nt.links.new(src, fout.inputs[i])
     except Exception as e:
         print("[SEKIYADO] PNG の分割出力を設定できませんでした（EXR は出力されます）:", e)
 
@@ -335,6 +502,11 @@ def main():
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--show-plane", action="store_true", help="機体の位置に目安の形を置く")
     ap.add_argument("--skip-far", action="store_true", help="約 300 km 四方の遠景地形を作らない（軽量化）")
+    ap.add_argument("--fps", type=int, default=24, help="出力のフレームレート")
+    ap.add_argument("--start-sec", type=float, default=0.0, help="録画のどこから使うか（秒）")
+    ap.add_argument("--duration-sec", type=float, default=0.0, help="使う長さ（秒、0 = 最後まで）")
+    ap.add_argument("--shutter", type=float, default=0.45, help="モーションブラーのシャッター（0 で無効）")
+    ap.add_argument("--grass-density", type=float, default=6.0, help="低空区間の草の密度（本/m²、0 で無効）")
     ap.add_argument("--render", action="store_true")
     args = ap.parse_args(argv)
 
@@ -342,10 +514,16 @@ def main():
         flight = json.load(f)
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
-    build_terrains(args.data_dir, skip_far=args.skip_far)
+    detail_obj, detail = build_terrains(args.data_dir, skip_far=args.skip_far)
     setup_world_and_sun(flight.get("environment", {}))
-    insert_motion(flight, show_plane=args.show_plane)
-    setup_render(args.out, args.engine, args.samples, args.width, args.height)
+    frames = insert_motion(flight, fps=args.fps, start_sec=args.start_sec, duration_sec=args.duration_sec,
+                           show_plane=args.show_plane)
+    try:
+        attach_low_pass_grass(detail_obj, detail, frames, os.path.join(args.data_dir, "terrain_detail.jpg"),
+                              density=args.grass_density)
+    except Exception as e:  # Blender のバージョン差で失敗しても、草なしで続ける
+        print("[SEKIYADO] 草を作れませんでした（草なしで続けます）:", e)
+    setup_render(args.out, args.engine, args.samples, args.width, args.height, shutter=args.shutter)
 
     if args.save_blend:
         path = os.path.abspath(args.save_blend)
