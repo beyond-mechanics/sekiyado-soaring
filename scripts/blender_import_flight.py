@@ -51,6 +51,23 @@ def enum_items(obj, prop):
     return [i.identifier for i in obj.bl_rna.properties[prop].enum_items]
 
 
+def enable_nodes(datablock):
+    """マテリアル・ワールドをノードで使う。Blender 5.0 以降は常にノードなので use_nodes に触れない（非推奨の警告を出さない）"""
+    if bpy.app.version < (5, 0, 0) and hasattr(datablock, "use_nodes"):
+        datablock.use_nodes = True
+    return datablock.node_tree
+
+
+def new_node(nt, *types):
+    """ノードを作る。Blender のバージョンで型名が違うものは候補を順に試す"""
+    for t in types:
+        try:
+            return nt.nodes.new(t)
+        except RuntimeError:
+            continue
+    raise RuntimeError("ノードを作れません: " + ", ".join(types))
+
+
 def set_if(obj, name, value):
     if hasattr(obj, name):
         setattr(obj, name, value)
@@ -85,7 +102,7 @@ def build_grid_mesh(name, xmin, zmin, width, depth, segx, segz, height_fn, img_p
     bpy.context.collection.objects.link(obj)
 
     mat = bpy.data.materials.new(name=f"{name}_Mat")
-    mat.use_nodes = True
+    enable_nodes(mat)
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     bsdf.inputs["Roughness"].default_value = 0.95
     if img_path and os.path.exists(img_path):
@@ -191,8 +208,7 @@ def make_grass_tuft():
     bpy.context.collection.objects.link(obj)
 
     mat = bpy.data.materials.new("GrassTuft_Mat")
-    mat.use_nodes = True
-    nt = mat.node_tree
+    nt = enable_nodes(mat)
     bsdf = nt.nodes.get("Principled BSDF")
     return obj, mat, nt, bsdf
 
@@ -286,8 +302,7 @@ def setup_world_and_sun(env):
     scene = bpy.context.scene
     world = bpy.data.worlds.new("SekiyadoWorld")
     scene.world = world
-    world.use_nodes = True
-    nt = world.node_tree
+    nt = enable_nodes(world)
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputWorld")
     bg = nt.nodes.new("ShaderNodeBackground")
@@ -431,10 +446,13 @@ def setup_render(out_dir, engine, samples, width, height, shutter=0.45):
                 except TypeError:
                     continue
                 prefs.get_devices()
-                if any(d.type == dev for d in prefs.devices):
+                gpus = [d for d in prefs.devices if d.type == dev]
+                if gpus:
+                    # GPU だけを使う（CPU を混ぜると、速い GPU が CPU の担当分を待って遅くなることがある）
                     for d in prefs.devices:
-                        d.use = True
+                        d.use = d.type == dev
                     scene.cycles.device = "GPU"
+                    print(f"[SEKIYADO] Cycles {dev}:", ", ".join(d.name for d in gpus))
                     break
         except Exception as e:  # GPU が使えなければ CPU のまま
             print("[SEKIYADO] GPU 設定をスキップ:", e)
@@ -448,45 +466,70 @@ def setup_render(out_dir, engine, samples, width, height, shutter=0.45):
     scene.world.mist_settings.depth = 3500.0
     scene.world.mist_settings.falloff = "QUADRATIC"
 
-    # すべてのパスを 1 枚に持つマルチレイヤー EXR（Blender のバージョンに依存しない）
+    # すべてのパスを 1 枚に持つマルチレイヤー EXR（後から別の用途に取り出せる控え）
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     scene.render.filepath = os.path.join(out_dir, "exr", "frame_")
-    scene.render.image_settings.file_format = "OPEN_EXR_MULTILAYER"
-    scene.render.image_settings.color_depth = "16"
+    fmt = scene.render.image_settings
+    if hasattr(fmt, "media_type"):  # Blender 5.x：形式の種類（画像・マルチレイヤー・動画）を先に選ぶ
+        fmt.media_type = "MULTI_LAYER_IMAGE"
+        fmt.file_format = "OPEN_EXR"
+    else:
+        fmt.file_format = "OPEN_EXR_MULTILAYER"
+    fmt.color_depth = "16"
 
-    # Blender 4.x（旧コンポジター API）では Beauty・Mist・Normal を PNG 連番にも分けて書き出す
-    if not hasattr(scene, "node_tree"):
-        print("[SEKIYADO] このバージョンでは PNG の分割出力を省略（EXR に全パスが入っています）")
-        return
+    # コンポジターで Beauty・Mist・Normal を PNG 連番に分けて書き出す（AI 実写化の入力と制御用）
     try:
-        scene.use_nodes = True
-        nt = scene.node_tree
-        nt.nodes.clear()
-        rl = nt.nodes.new("CompositorNodeRLayers")
-        comp = nt.nodes.new("CompositorNodeComposite")
-        nt.links.new(rl.outputs["Image"], comp.inputs["Image"])
-        fout = nt.nodes.new("CompositorNodeOutputFile")
-        fout.base_path = out_dir
-        fout.format.file_format = "PNG"
-        fout.file_slots.clear()
+        if hasattr(scene, "compositing_node_group"):  # Blender 5.x：コンポジターはノードグループ
+            nt = bpy.data.node_groups.new("SekiyadoComp", "CompositorNodeTree")
+            nt.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+            scene.compositing_node_group = nt
+            rl = nt.nodes.new("CompositorNodeRLayers")
+            gout = nt.nodes.new("NodeGroupOutput")
+            nt.links.new(rl.outputs["Image"], gout.inputs[0])
+        else:  # Blender 4.x
+            scene.use_nodes = True
+            nt = scene.node_tree
+            nt.nodes.clear()
+            rl = nt.nodes.new("CompositorNodeRLayers")
+            comp = nt.nodes.new("CompositorNodeComposite")
+            nt.links.new(rl.outputs["Image"], comp.inputs["Image"])
         # 法線は -1〜1 なので、PNG に入れる前に 0〜1 へ移す（そのままだと負の成分が 0 に切られる）
-        sep = nt.nodes.new("CompositorNodeSeparateColor")
-        comb = nt.nodes.new("CompositorNodeCombineColor")
+        sep = new_node(nt, "CompositorNodeSeparateColor", "ShaderNodeSeparateColor")
+        comb = new_node(nt, "CompositorNodeCombineColor", "ShaderNodeCombineColor")
         nt.links.new(rl.outputs["Normal"], sep.inputs[0])
         for k in range(3):
-            m = nt.nodes.new("CompositorNodeMath")
+            m = new_node(nt, "CompositorNodeMath", "ShaderNodeMath")
             m.operation = "MULTIPLY_ADD"
             m.inputs[1].default_value = 0.5
             m.inputs[2].default_value = 0.5
             nt.links.new(sep.outputs[k], m.inputs[0])
             nt.links.new(m.outputs[0], comb.inputs[k])
-        sources = (("beauty/frame_", rl.outputs["Image"]), ("mist/frame_", rl.outputs["Mist"]), ("normal/frame_", comb.outputs[0]))
-        for i, (slot, src) in enumerate(sources):
-            fout.file_slots.new(slot)
-            nt.links.new(src, fout.inputs[i])
+        for name, src, kind in (("beauty", rl.outputs["Image"], "RGBA"), ("mist", rl.outputs["Mist"], "FLOAT"),
+                                ("normal", comb.outputs[0], "RGBA")):
+            add_png_output(nt, os.path.join(out_dir, name), src, kind)
     except Exception as e:
         print("[SEKIYADO] PNG の分割出力を設定できませんでした（EXR は出力されます）:", e)
+
+
+def add_png_output(nt, directory, src, kind):
+    """1 つのパスを directory/frame_0001.png … に書き出す File Output ノード（パスごとに 1 つ）"""
+    os.makedirs(directory, exist_ok=True)
+    fout = nt.nodes.new("CompositorNodeOutputFile")
+    if hasattr(fout.format, "media_type"):
+        fout.format.media_type = "IMAGE"
+    fout.format.file_format = "PNG"
+    fout.format.color_mode = "BW" if kind == "FLOAT" else "RGB"
+    if hasattr(fout, "file_output_items"):  # Blender 5.x
+        fout.directory = directory
+        set_if(fout, "file_name", "frame_")
+        fout.file_output_items.clear()
+        fout.file_output_items.new(kind, "")
+    else:  # Blender 4.x
+        fout.base_path = directory
+        fout.file_slots.clear()
+        fout.file_slots.new("frame_")
+    nt.links.new(src, fout.inputs[0])
 
 
 def main():

@@ -1,0 +1,50 @@
+# Blender スクリプト（scripts/blender_import_flight.py）を Blender 4.2 LTS と 5.2 LTS で実際に動かして確かめます。
+# 5 秒のテストフライトを小さな解像度・CPU でレンダリングし、beauty / mist / normal の連番と MP4 ができるかを見ます。
+name: Blender smoke test
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths: ['scripts/blender_import_flight.py', 'scripts/render_and_ai_v2v.py', 'scripts/make_test_flight.py', '.github/workflows/blender-smoke.yml']
+jobs:
+  render:
+    strategy:
+      fail-fast: false
+      matrix:
+        blender: ['4.2.3', '5.2.2']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender ${{ matrix.blender }} and ffmpeg
+        run: |
+          V=${{ matrix.blender }}
+          sudo apt-get -qq update && sudo apt-get -qq install -y ffmpeg libxi6 libxkbcommon0 libsm6 libgl1 libegl1 > /dev/null
+          wget -q "https://download.blender.org/release/Blender${V%.*}/blender-${V}-linux-x64.tar.xz" -O blender.tar.xz
+          mkdir -p "$RUNNER_TEMP/blender" && tar -xf blender.tar.xz -C "$RUNNER_TEMP/blender" --strip-components=1
+          "$RUNNER_TEMP/blender/blender" --version | head -1
+      - name: Make the test flight
+        run: python3 scripts/make_test_flight.py --out exports/test_lowpass_5s.json --duration 5
+      - name: Render 5 s and encode
+        run: |
+          python3 scripts/render_and_ai_v2v.py --blender "$RUNNER_TEMP/blender/blender" \
+            --flight exports/test_lowpass_5s.json --out renders/test5s --duration-sec 5 \
+            --width 320 --height 180 --samples 4 --skip-far --grass-density 1 --backend dry-run 2>&1 | tee render.log
+          grep -E "Traceback|Error" render.log && grep -B2 -A8 "Traceback" render.log || true
+      - name: Check outputs
+        run: |
+          ls renders/test5s
+          for n in beauty mist normal; do
+            c=$(ls renders/test5s/$n/*.png | wc -l); echo "$n: $c PNG"; test "$c" -ge 120
+            test -s renders/test5s/$n.mp4
+          done
+          ! grep -q "PNG の分割出力を設定できませんでした" render.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-blender-${{ matrix.blender }}
+          path: |
+            render.log
+            renders/test5s/*.mp4
+            renders/test5s/beauty/frame_0060.png
+            renders/test5s/mist/frame_0060.png
+            renders/test5s/normal/frame_0060.png
