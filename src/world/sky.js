@@ -34,6 +34,7 @@ export class Environment {
     this.fogColor = new THREE.Color();
     scene.fog = new THREE.FogExp2(0xb8c8d4, 1e-5);
     this.sunDir = new THREE.Vector3(0, 1, 0);
+    this.sunRadiance = new THREE.Color(); // 太陽光の色×強さ（樹木の透過光などシェーダーで共有）
   }
 
   set({ hour, visibility }) {
@@ -54,6 +55,7 @@ export class Environment {
     this.sun.color.setRGB(1, 0.62 + 0.36 * t, 0.38 + 0.55 * t);
     this.sun.intensity = 0.4 + 3.2 * Math.pow(THREE.MathUtils.clamp(el / 0.9, 0, 1), 0.6);
     this.hemi.intensity = 0.15 + 0.3 * t;
+    this.sunRadiance.copy(this.sun.color).multiplyScalar(this.sun.intensity);
     // 霞の色（地平線付近の空の色に合わせる）
     const haze = new THREE.Color(visibility < 40000 ? 0xc3c8c6 : 0xb4c6d4);
     const warm = new THREE.Color(0xe0b892);

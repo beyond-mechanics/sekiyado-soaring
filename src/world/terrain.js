@@ -1,5 +1,6 @@
 // 地形：滑空場周辺の詳細地形（航空写真＋DEM5）、約8km四方の広域地形、約300km四方の遠景地形（地球の丸み付き）。
 import * as THREE from 'three';
+import { CLOUD_SHADOW_PARS, CLOUD_SKY_DIM, cloudShadowLookup, lightsWithCloudShadow, cloudShadowUniforms } from './clouds.js';
 
 const R_EARTH = 6371000;
 
@@ -75,6 +76,20 @@ export function makeDetailTexture(renderer) {
   t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.NoColorSpace;
   t.anisotropy = renderer.capabilities.getMaxAnisotropy();
   t.generateMipmaps = true;
+  // 同じノイズの傾きからマイクロ法線マップを作る（低空で草地・土の凹凸が光の向きで陰影を持つ）
+  const nd = new Uint8Array(S * S * 4), strength = 5.5;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const xm = (x - 1 + S) % S, xp = (x + 1) % S, ym = (y - 1 + S) % S, yp = (y + 1) % S;
+    const dx = (val[y * S + xp] - val[y * S + xm]) * strength, dy = (val[yp * S + x] - val[ym * S + x]) * strength;
+    const inv = 1 / Math.hypot(dx, dy, 1), k = (y * S + x) * 4;
+    nd[k] = Math.round((-dx * inv * 0.5 + 0.5) * 255); nd[k + 1] = Math.round((-dy * inv * 0.5 + 0.5) * 255);
+    nd[k + 2] = Math.round((inv * 0.5 + 0.5) * 255); nd[k + 3] = 255;
+  }
+  const nt = new THREE.DataTexture(nd, S, S);
+  nt.wrapS = nt.wrapT = THREE.RepeatWrapping; nt.colorSpace = THREE.NoColorSpace;
+  nt.generateMipmaps = true; nt.minFilter = THREE.LinearMipmapLinearFilter; nt.magFilter = THREE.LinearFilter;
+  nt.anisotropy = t.anisotropy; nt.needsUpdate = true;
+  t.userData.normalMap = nt;
   return t;
 }
 
@@ -83,12 +98,14 @@ export function makeGroundMaterial(map, detailTex, opts = {}) {
   const m = new THREE.MeshStandardMaterial({ map, roughness: 0.96, metalness: 0, vertexColors: !!opts.vertexColors });
   m.onBeforeCompile = (sh) => {
     sh.uniforms.detailTex = { value: detailTex };
+    sh.uniforms.detailNormalTex = { value: detailTex.userData.normalMap || detailTex };
     sh.uniforms.photoGrade = { value: new THREE.Vector3(opts.saturation ?? 1.08, opts.contrast ?? 1.0, opts.gain ?? 1.0) };
+    Object.assign(sh.uniforms, cloudShadowUniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
       .replace('#include <fog_vertex>', '#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D detailTex;\nuniform vec3 photoGrade;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D detailTex;\nuniform sampler2D detailNormalTex;\nuniform vec3 photoGrade;' + CLOUD_SHADOW_PARS)
       .replace('#include <map_fragment>', `
         #ifdef USE_MAP
           diffuseColor *= texture2D(map, vMapUv, -0.6);
@@ -107,9 +124,22 @@ export function makeGroundMaterial(map, detailTex, opts = {}) {
           vec3 det = d1 * d2 * 4.6;
           diffuseColor.rgb *= mix(vec3(1.0), det, fade * 0.75);
           diffuseColor.rgb *= mix(1.0, d3.g * 2.2, 0.25);
-        }`);
+        }`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {
+          // マイクロ法線：近距離だけ（遠くはミップマップで平らになり、さらに距離で消す）
+          float nfade = 1.0 - smoothstep(30.0, 420.0, length(vWPos - cameraPosition));
+          if (nfade > 0.001) {
+            vec2 n1 = texture2D(detailNormalTex, vWPos.xz / 2.7).xy * 2.0 - 1.0;
+            vec2 n2 = texture2D(detailNormalTex, vWPos.xz / 17.0).xy * 2.0 - 1.0;
+            vec3 wPerturb = vec3(n1.x + n2.x * 0.6, 0.0, n1.y + n2.y * 0.6) * (0.3 * nfade);
+            normal = normalize(normal + (viewMatrix * vec4(wPerturb, 0.0)).xyz);
+          }
+        }`)
+      .replace('#include <lights_fragment_begin>', cloudShadowLookup('vWPos') + lightsWithCloudShadow())
+      .replace('#include <lights_fragment_end>', CLOUD_SKY_DIM + '#include <lights_fragment_end>');
   };
-  m.customProgramCacheKey = () => 'ground' + (opts.vertexColors ? 'vc' : '');
+  m.customProgramCacheKey = () => 'ground51' + (opts.vertexColors ? 'vc' : '');
   return m;
 }
 
@@ -208,11 +238,19 @@ export function buildFarTerrain(scene, data, renderer, quality) {
   const farm = makeFarmTexture(renderer);
   const mat = new THREE.MeshStandardMaterial({ map: farm, vertexColors: true, roughness: 0.95 });
   mat.onBeforeCompile = (sh) => {
-    sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', `
+    Object.assign(sh.uniforms, cloudShadowUniforms);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+      .replace('#include <fog_vertex>', '#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;' + CLOUD_SHADOW_PARS)
+      .replace('#include <map_fragment>', `
       vec4 farmT = texture2D(map, vMapUv);
-      diffuseColor.rgb *= mix(vec3(1.0), farmT.rgb * 1.7, 0.55);`);
+      diffuseColor.rgb *= mix(vec3(1.0), farmT.rgb * 1.7, 0.55);`)
+      .replace('#include <lights_fragment_begin>', cloudShadowLookup('vWPos') + lightsWithCloudShadow())
+      .replace('#include <lights_fragment_end>', CLOUD_SKY_DIM + '#include <lights_fragment_end>');
   };
-  mat.customProgramCacheKey = () => 'farTerrain';
+  mat.customProgramCacheKey = () => 'farTerrain51';
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = false; mesh.renderOrder = -1;
   scene.add(mesh);

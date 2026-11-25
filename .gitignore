@@ -4,3 +4,4 @@ app/renderer.js
 app/renderer.js.map
 assets/data/.tilecache/
 assets/data-hires/
+__pycache__/

@@ -68,3 +68,5 @@ dialog h2{font-weight:500;margin:10px 0}dialog h3{font-size:13px;margin:18px 0 6
 dialog p{font-size:12px;line-height:1.85;color:#bfd0cf}.dim{color:#8ea5a6!important;font-size:10.5px!important}
 .close{float:right}
 .keys{border-collapse:collapse;font-size:12px;width:100%}.keys td{padding:6px 8px;border-bottom:1px solid #ffffff14;color:#cad9d6}.keys td:first-child{white-space:nowrap;color:var(--accent);width:150px;font-variant-numeric:tabular-nums}
+#recBtn.rec{background:#8c2323e6;border-color:#ff9b9b;color:#fff;animation:recPulse 1.2s infinite}
+@keyframes recPulse{0%,100%{box-shadow:0 0 0 0 #ff5a5a66}50%{box-shadow:0 0 14px 2px #ff5a5a99}}

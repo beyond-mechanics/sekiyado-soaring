@@ -15,6 +15,9 @@ import { makeGlider, makeDimona, makeTowPlane } from './aircraft/models.js';
 import { makeCockpit } from './ui/cockpit.js';
 import { Input } from './input.js';
 import { makeAudio } from './audio.js';
+import { FlightRecorder } from './sim/recorder.js';
+
+const APP_VERSION = '5.1.0';
 
 const $ = id => document.getElementById(id);
 
@@ -59,7 +62,7 @@ let data, height = () => 10, textures, scenery, clouds, atmo, models = {}, cockp
 let s = null, plane = null, tow = null, towModel = null, ropeLine = null, thermalVisual = null;
 let active = false, paused = false, camMode = 0, hudOn = true, path = [], last = 0, uiTime = 0, trailTime = 0, releaseMsg = 0, resultShown = false;
 const CAM_NAMES = ['追尾', 'コックピット', '外部', '地上'];
-const input = new Input(), sound = makeAudio();
+const input = new Input(), sound = makeAudio(), recorder = new FlightRecorder({ fps: 60, clipSeconds: 30 });
 
 function progress(f, text) { $('loadBar').style.width = Math.round(f * 100) + '%'; if (text) $('loadText').textContent = text + ' を準備しています…'; }
 const tick = () => new Promise(r => setTimeout(r, 0));
@@ -92,7 +95,7 @@ async function init() {
     buildLocalTerrain(scene, data, textures, height, detailTex);
     buildFarTerrain(scene, data, renderer, quality);
     progress(0.72, '樹木と建物（航空写真から検出）'); await tick();
-    scenery = buildScenery(scene, data, textures, height, quality);
+    scenery = buildScenery(scene, data, textures, height, quality, env);
     progress(0.86, '機体'); await tick();
     models.glider = makeGlider(); models.dimona = makeDimona(); towModel = makeTowPlane();
     for (const k of ['glider', 'dimona']) { scene.add(models[k].group); models[k].group.visible = false; cockpits[k] = makeCockpit(models[k], k); }
@@ -116,8 +119,8 @@ function applyWeather() {
   readSettings();
   atmo = new Atmosphere({ windSpeed: Number(settings.windSpeed), windFrom: Number(settings.windDir), thermalScale: Number(settings.thermals), turbulence: Number(settings.turbulence) });
   env.set({ hour: Number(settings.timeOfDay), visibility: Number(settings.visibility) });
-  if (clouds) scene.remove(clouds.group);
-  clouds = buildClouds(scene, atmo, height, env.sunDir, quality, true);
+  clouds?.dispose();
+  clouds = buildClouds(scene, atmo, height, env, quality, true);
   if (thermalVisual) scene.remove(thermalVisual.group);
   thermalVisual = makeThermalVisual();
 }
@@ -154,6 +157,7 @@ function makeThermalVisual() {
 
 // ---------- フライト開始 ----------
 function resetFlight(fly = true) {
+  if (recorder.recording) stopRec();
   readSettings();
   const type = settings.aircraft, mode = settings.mode;
   for (const k of ['glider', 'dimona']) models[k].group.visible = k === type;
@@ -171,10 +175,12 @@ function resetFlight(fly = true) {
   if (mode === 'tow') { tow = createTow(height); s.x = tow.x + hs * 55; s.z = tow.z - hc * 55; }
   path = []; resultShown = false; releaseMsg = 0;
   active = fly; paused = false;
+  recorder.reset(); recorder.setMeta({ settings, atmo, env, version: APP_VERSION });
   input.clear(); input.look.yaw = input.look.pitch = 0; input.look.zoom = 1;
   document.body.classList.toggle('menu', !fly); document.body.classList.toggle('flying', fly);
   $('start').hidden = fly; $('flightUI').hidden = !fly; $('result').hidden = true; $('pauseMenu').hidden = true;
-  $('pauseBtn').hidden = !fly; $('menuTopBtn').hidden = !fly;
+  $('pauseBtn').hidden = !fly; $('menuTopBtn').hidden = !fly; $('recBtn').hidden = !fly; $('clipBtn').hidden = !fly;
+  updateRecUi();
   $('motorHud').hidden = type !== 'dimona'; $('towHud').hidden = !tow; $('thermalHud').hidden = !!tow;
   updateUnits();
   camera.position.set(s.x + 30, s.y + 10, s.z + 50);
@@ -195,6 +201,7 @@ function aircraftChanged() {
 // ---------- 着陸・終了判定 ----------
 function finish(title, text) {
   if (resultShown) return; resultShown = true; active = false; sound.hush();
+  if (recorder.recording) stopRec();
   $('resultTitle').textContent = title; $('resultText').textContent = text; $('result').hidden = false;
 }
 function evaluate() {
@@ -271,6 +278,11 @@ function frame(now) {
     }
   } else ropeLine.visible = false;
 
+  if (active && !paused && $('start').hidden) {
+    recorder.capture(dt, { camera, camMode, plane: visual.group, state: s, agl: Math.max(0, s.y - height(s.x, s.z) - s.a.gearH), towGroup: towModel.group, towAttached: tow?.attached });
+    if (recUiState && !recorder.recording) stopRec('録画が上限（30分）に達したので保存しました'); // 上限で自動停止
+
+  }
   const camAgl = camera.position.y - height(camera.position.x, camera.position.z);
   env.follow(visual.group.position, visual.group.position.y - height(visual.group.position.x, visual.group.position.z), quality);
   scenery.update(camera.position, now / 1000, Math.atan2(atmo.wdx, -atmo.wdz), atmo.windSpeed);
@@ -329,6 +341,7 @@ function handleEvents(ev) {
   if (ev.has('KeyR')) detach(false);
   if (ev.has('KeyE') && s.type === 'dimona') { s.engine.on = !s.engine.on; sound.unlock(); flash('エンジン ' + (s.engine.on ? '始動' : '停止')); }
   if (ev.has('BracketLeft') || ev.has('BracketRight')) { clampTrim(s, s.trim + (ev.has('BracketRight') ? 1.39 : -1.39)); flash(`トリム ${Math.round(s.trim * 3.6)} km/h`); }
+  if (ev.has('KeyV')) { if (input.keys.ShiftLeft || input.keys.ShiftRight) saveClip(); else toggleRec(); }
   if (ev.has('KeyM')) { const on = sound.toggle(); flash('音 ' + (on ? 'ON' : 'OFF')); }
 }
 
@@ -340,6 +353,30 @@ function detach(auto) {
   if (!releaseTow(tow, s, height)) { if (!auto) flash('高度 30 m 以上で切り離せます'); return; }
   s.trim = AIRCRAFT[s.type].trim; s.alpha = 0.05; releaseMsg = s.time + 6;
   $('towHud').hidden = true; $('thermalHud').hidden = false;
+}
+
+// ---------- フライト録画（Blender・動画化用の軌道 JSON） ----------
+let recUiState = false;
+function updateRecUi() {
+  recUiState = recorder.recording;
+  $('recBtn').classList.toggle('rec', recorder.recording);
+  $('recBtn').textContent = recorder.recording ? '■ 録画停止 [V]' : '● 録画 [V]';
+}
+function toggleRec() {
+  if (!active) return;
+  if (!recorder.recording) { recorder.start(); flash('フライト録画を開始しました（V で停止・保存）'); }
+  else stopRec();
+  updateRecUi();
+}
+function stopRec(msg) {
+  const name = FlightRecorder.save(recorder.stop(), 'flight');
+  flash(name ? (msg || '録画を保存') + `：${name}` : '録画データがありません');
+  updateRecUi();
+}
+function saveClip() {
+  if (!active) return;
+  const name = FlightRecorder.save(recorder.clip(30), 'clip30s');
+  flash(name ? `直近30秒を保存：${name}` : '保存できるデータがまだありません');
 }
 
 function setPause(v) { paused = v; if (v) sound.hush(); $('pauseMenu').hidden = !v; $('pauseBtn').textContent = v ? '再開 [P]' : '一時停止 [P]'; }
@@ -426,6 +463,8 @@ $('restartBtn').onclick = () => resetFlight(true);
 $('toMenuBtn').onclick = () => resetFlight(false);
 $('pauseBtn').onclick = () => { if (active) setPause(!paused); };
 $('menuTopBtn').onclick = () => resetFlight(false);
+$('recBtn').onclick = () => { toggleRec(); canvas.focus(); };
+$('clipBtn').onclick = () => { saveClip(); canvas.focus(); };
 $('infoBtn').onclick = () => { if (active) setPause(true); $('info').showModal(); };
 $('closeInfo').onclick = () => $('info').close();
 $('aircraft').onchange = aircraftChanged;
