@@ -22,11 +22,17 @@ jobs:
           wget -q "https://download.blender.org/release/Blender${V%.*}/blender-${V}-linux-x64.tar.xz" -O blender.tar.xz
           mkdir -p "$RUNNER_TEMP/blender" && tar -xf blender.tar.xz -C "$RUNNER_TEMP/blender" --strip-components=1
           "$RUNNER_TEMP/blender/blender" --version | head -1
+      - name: Add swap (the runner has 16 GB of memory)
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap -q /swapfile2 && sudo swapon /swapfile2
+          free -m
       - name: Make the test flight
         run: python3 scripts/make_test_flight.py --out exports/test_lowpass_5s.json --duration 5
       - name: Render 5 s and encode
         run: |
           set -o pipefail
+          (while sleep 20; do echo "[mem] $(free -m | awk '/Mem/{print $3 " MB used"}; /Swap/{print "swap " $3 " MB"}' | tr '\n' ' ')"; done) &
           python3 scripts/render_and_ai_v2v.py --blender "$RUNNER_TEMP/blender/blender" \
             --flight exports/test_lowpass_5s.json --out renders/test5s --duration-sec 5 \
             --width 320 --height 180 --samples 4 --skip-far --grass-density 1 --backend dry-run 2>&1 | tee render.log
