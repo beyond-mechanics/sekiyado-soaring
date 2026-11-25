@@ -15,7 +15,10 @@ export async function loadTerrainData(progress) {
   const farBuf = await (await fetch('data/far_dem.bin')).arrayBuffer();
   const farN = new DataView(farBuf).getUint32(0, true), farHalf = new DataView(farBuf).getFloat32(4, true);
   const far = { N: farN, half: farHalf, h: new Int16Array(farBuf, 16) };
-  return { meta, dem, detail, scenery, far, hires };
+  // OpenStreetMap の建物・道路・土地利用（scripts/fetch-osm.mjs で作成。なければ従来どおり写真だけで景観を作る）
+  let osm = null;
+  try { const r = await fetch('data/osm.json'); if (r.ok) osm = await r.json(); } catch { /* なし */ }
+  return { meta, dem, detail, scenery, far, hires, osm };
 }
 
 function sampleGrid(d, x, z) {

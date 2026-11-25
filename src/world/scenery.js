@@ -1,6 +1,7 @@
 // 景観：航空写真から自動検出した樹木、格納庫、滑走路標識、吹き流し、川面、草。
 import * as THREE from 'three';
 import { RUNWAY_HEADING, RUNWAY_LENGTH, inRunway } from '../sim/flight.js';
+import { buildOsmBuildings, makeLandUse, fillWoods } from './osm.js';
 
 let seed = 151;
 function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
@@ -9,6 +10,21 @@ function imageData(img) {
   const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
   const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
   return g.getImageData(0, 0, img.width, img.height);
+}
+
+// 航空写真の色（sRGB 0〜1）を世界座標で引く。詳細域は高解像度の分割画像、外側は広域の画像
+function makePhotoSampler(textures, meta) {
+  const srcs = [...(textures.detailChunks || []).map(ch => ({ ...ch, d: imageData(ch.texture.image) })),
+    { xmin: meta.xmin, zmin: meta.zmin, width: meta.size, depth: meta.size, d: imageData(textures.wide.image) }];
+  return (x, z) => {
+    for (const s of srcs) {
+      const u = (x - s.xmin) / s.width, v = (z - s.zmin) / s.depth;
+      if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+      const W = s.d.width, H = s.d.height, k = (Math.floor(v * H) * W + Math.floor(u * W)) * 4, p = s.d.data;
+      return [p[k] / 255, p[k + 1] / 255, p[k + 2] / 255];
+    }
+    return null;
+  };
 }
 
 function distToRiver(river, x, z) {
@@ -78,7 +94,15 @@ export function buildScenery(scene, data, textures, height, quality, env) {
     return Math.abs(along) < RUNWAY_LENGTH / 2 + 60 && Math.abs(cross) < 70;
   };
   const inBuildings = (x, z) => sc.buildings.some(b => Math.abs(x - b.x) < b.w / 2 + 4 && Math.abs(z - b.z) < b.d / 2 + 4);
-  const exclude = (x, z) => nearRunway(x, z) || inBuildings(x, z);
+  const baseExclude = (x, z) => nearRunway(x, z) || inBuildings(x, z);
+
+  // OpenStreetMap があれば：建物を輪郭から生成し、建物・道路・農地・草地の上には木を置かない。樹林は範囲の中を均一に埋める
+  let osmBuildings = null, land = null;
+  if (data.osm) {
+    osmBuildings = buildOsmBuildings(group, data.osm, height, makePhotoSampler(textures, meta), quality, baseExclude);
+    land = makeLandUse(data.osm, osmBuildings.footprints);
+  }
+  const exclude = land ? (x, z) => baseExclude(x, z) || land.noTree(x, z) || !!land.inWood(x, z) : baseExclude;
 
   // 樹木：写真から検出（詳細域は細かく、広域は粗く）＋旧版の手動配置
   const trees = sc.trees.map(t => ({ ...t, conifer: rand() < 0.3 }));
@@ -89,6 +113,7 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   const wideTrees = detectTrees(textures.wide.image, { xmin: meta.xmin, zmin: meta.zmin, width: meta.size, depth: meta.size }, 14, density * 0.9, sc.river,
     (x, z) => (x > detailRect.xmin && x < detailRect.xmin + detailRect.width && z > detailRect.zmin && z < detailRect.zmin + detailRect.depth) || exclude(x, z));
   trees.push(...wideTrees);
+  if (land) trees.push(...fillWoods(land, [16, 11, 8.5, 7][quality], rand, (x, z) => !baseExclude(x, z) && !land.noTree(x, z)));
 
   // 1 km 四方ごとにインスタンス化（視錐台・影カメラのカリングが効くように）
   const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92 });
@@ -233,10 +258,12 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   const water = new THREE.Mesh(wg, wm); water.receiveShadow = true; group.add(water);
 
   return {
-    group, treeCount: trees.length,
+    group, treeCount: trees.length, buildingCount: osmBuildings?.count || 0,
     update(camPos, time, windTo, windSpeed) {
       const agl = camPos.y - height(camPos.x, camPos.z);
       const far2 = treeRange * treeRange;
+      const bRange2 = [2500, 5000, 8000, 9000][quality] ** 2 + agl * agl * 2;
+      for (const m of osmBuildings?.meshes || []) { const c = m.userData.center; m.visible = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2 < bRange2; }
       for (const m of chunkMeshes) { const c = m.userData.center; m.visible = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2 < far2 + agl * agl * 2; }
       nt.offset.set(time * 0.004, time * 0.011); waterTime.value = time;
       // 吹き流し：風下へ向き、風速 15 kt（約 7.7 m/s）で水平
