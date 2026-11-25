@@ -4,11 +4,13 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { AtmospherePass } from './world/atmospherePass.js';
 import { Atmosphere } from './sim/atmosphere.js';
 import { AIRCRAFT, RUNWAY_HEADING, createState, launch, stepFlight, runwayCoords, clampTrim } from './sim/flight.js';
 import { createTow, stepTow, releaseTow, stepDeparture } from './sim/tow.js';
 import { Environment } from './world/sky.js';
 import { loadTerrainData, makeHeight, makeDetailTexture, buildLocalTerrain, buildFarTerrain } from './world/terrain.js';
+import { loadGroundDetail } from './world/ground.js';
 import { buildScenery } from './world/scenery.js';
 import { buildClouds } from './world/clouds.js';
 import { makeGlider, makeDimona, makeTowPlane } from './aircraft/models.js';
@@ -48,11 +50,14 @@ const env = new Environment(renderer, scene);
 env.sun.shadow.mapSize.set(quality >= 2 ? 4096 : 2048, quality >= 2 ? 4096 : 2048);
 env.sun.shadow.bias = -0.0002; env.sun.shadow.normalBias = 0.04;
 
-let composer = null;
+let composer = null, atmoPass = null;
 if (quality >= 2) {
   const rt = new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), { type: THREE.HalfFloatType, samples: 4 });
+  rt.depthTexture = new THREE.DepthTexture(rt.width, rt.height); // SSAO・立体雲が深度を読む
   composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
+  atmoPass = new AtmospherePass(camera, quality); // 「高」：SSAO、「最高」：SSAO＋立体雲
+  composer.addPass(atmoPass);
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth / 2, innerHeight / 2), 0.12, 0.45, 0.95));
   composer.addPass(new OutputPass());
 }
@@ -92,7 +97,8 @@ async function init() {
     }
     progress(0.6, '地形メッシュ'); await tick();
     const detailTex = makeDetailTexture(renderer);
-    buildLocalTerrain(scene, data, textures, height, detailTex);
+    const groundDetail = await loadGroundDetail(data, renderer, quality); // 「軽量」では読み込まない
+    buildLocalTerrain(scene, data, textures, height, detailTex, groundDetail);
     buildFarTerrain(scene, data, renderer, quality);
     progress(0.72, '樹木と建物（航空写真から検出）'); await tick();
     scenery = buildScenery(scene, data, textures, height, quality, env);
@@ -121,6 +127,8 @@ function applyWeather() {
   env.set({ hour: Number(settings.timeOfDay), visibility: Number(settings.visibility) });
   clouds?.dispose();
   clouds = buildClouds(scene, atmo, height, env, quality, true);
+  // 「最高」は立体雲（レイマーチング）で描き、板の雲は隠す（雲の影マップはそのまま使う）
+  if (atmoPass && quality >= 3) { atmoPass.setClouds(clouds.centers, env, atmo); clouds.group.visible = !atmoPass.cloudsOn; }
   if (thermalVisual) scene.remove(thermalVisual.group);
   thermalVisual = makeThermalVisual();
 }

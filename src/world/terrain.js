@@ -1,5 +1,6 @@
 // 地形：滑空場周辺の詳細地形（航空写真＋DEM5）、約8km四方の広域地形、約300km四方の遠景地形（地球の丸み付き）。
 import * as THREE from 'three';
+import { groundDetailUniforms, GROUND_PBR_PARS, GROUND_PBR_ALBEDO, GROUND_PBR_ROUGHNESS, GROUND_PBR_NORMAL } from './ground.js';
 import { CLOUD_SHADOW_PARS, CLOUD_SKY_DIM, cloudShadowLookup, lightsWithCloudShadow, cloudShadowUniforms } from './clouds.js';
 
 const R_EARTH = 6371000;
@@ -99,7 +100,9 @@ export function makeDetailTexture(renderer) {
 // 航空写真の地面マテリアル：写真の色を補正し、近距離では細部ノイズを重ねる。
 export function makeGroundMaterial(map, detailTex, opts = {}) {
   const m = new THREE.MeshStandardMaterial({ map, roughness: 0.96, metalness: 0, vertexColors: !!opts.vertexColors });
+  const gd = opts.groundDetail || null; // 写真ベースの PBR 素材（quality 1 以上。ground.js）
   m.onBeforeCompile = (sh) => {
+    if (gd) Object.assign(sh.uniforms, groundDetailUniforms(gd));
     sh.uniforms.detailTex = { value: detailTex };
     sh.uniforms.detailNormalTex = { value: detailTex.userData.normalMap || detailTex };
     sh.uniforms.photoGrade = { value: new THREE.Vector3(opts.saturation ?? 1.08, opts.contrast ?? 1.0, opts.gain ?? 1.0) };
@@ -108,7 +111,7 @@ export function makeGroundMaterial(map, detailTex, opts = {}) {
       .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
       .replace('#include <fog_vertex>', '#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D detailTex;\nuniform sampler2D detailNormalTex;\nuniform vec3 photoGrade;' + CLOUD_SHADOW_PARS)
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D detailTex;\nuniform sampler2D detailNormalTex;\nuniform vec3 photoGrade;' + (gd ? GROUND_PBR_PARS : '') + CLOUD_SHADOW_PARS)
       .replace('#include <map_fragment>', `
         #ifdef USE_MAP
           diffuseColor *= texture2D(map, vMapUv, -0.6);
@@ -119,6 +122,7 @@ export function makeGroundMaterial(map, detailTex, opts = {}) {
           c = mix(vec3(l), c, photoGrade.x);
           c = (c - 0.18) * photoGrade.y + 0.18;
           diffuseColor.rgb = max(c * photoGrade.z, 0.0);
+${gd ? '' : `
           float dist = length(vWPos - cameraPosition);
           float fade = 1.0 - smoothstep(40.0, 600.0, dist);
           vec3 d1 = texture2D(detailTex, vWPos.xz / 2.7).rgb;
@@ -127,8 +131,10 @@ export function makeGroundMaterial(map, detailTex, opts = {}) {
           vec3 det = d1 * d2 * 4.6;
           diffuseColor.rgb *= mix(vec3(1.0), det, fade * 0.75);
           diffuseColor.rgb *= mix(1.0, d3.g * 2.2, 0.25);
-        }`)
-      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+`}
+        }
+        ${gd ? GROUND_PBR_ALBEDO : ''}`)
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' + (gd ? GROUND_PBR_NORMAL : `
         {
           // マイクロ法線：近距離だけ（遠くはミップマップで平らになり、さらに距離で消す）
           float nfade = 1.0 - smoothstep(30.0, 420.0, length(vWPos - cameraPosition));
@@ -138,15 +144,16 @@ export function makeGroundMaterial(map, detailTex, opts = {}) {
             vec3 wPerturb = vec3(n1.x + n2.x * 0.6, 0.0, n1.y + n2.y * 0.6) * (0.3 * nfade);
             normal = normalize(normal + (viewMatrix * vec4(wPerturb, 0.0)).xyz);
           }
-        }`)
+        }`))
+      .replace('#include <roughnessmap_fragment>', gd ? GROUND_PBR_ROUGHNESS : '#include <roughnessmap_fragment>')
       .replace('#include <lights_fragment_begin>', cloudShadowLookup('vWPos') + lightsWithCloudShadow())
       .replace('#include <lights_fragment_end>', CLOUD_SKY_DIM + '#include <lights_fragment_end>');
   };
-  m.customProgramCacheKey = () => 'ground51' + (opts.vertexColors ? 'vc' : '');
+  m.customProgramCacheKey = () => 'ground52' + (opts.vertexColors ? 'vc' : '') + (gd ? 'pbr' : '');
   return m;
 }
 
-export function buildLocalTerrain(scene, data, textures, height, detailTex) {
+export function buildLocalTerrain(scene, data, textures, height, detailTex, groundDetail = null) {
   const { meta, detail } = data;
   // 広域（約 8 km 四方）：詳細域の部分をくり抜く
   const geo = new THREE.PlaneGeometry(meta.size, meta.size, 128, 128); geo.rotateX(-Math.PI / 2);
@@ -158,7 +165,7 @@ export function buildLocalTerrain(scene, data, textures, height, detailTex) {
     if (x < detail.xmin || x > detail.xmin + detail.width || z < detail.zmin || z > detail.zmin + detail.depth) ids.push(old[k], old[k + 1], old[k + 2]);
   }
   geo.setIndex(ids); geo.computeVertexNormals();
-  const wide = new THREE.Mesh(geo, makeGroundMaterial(textures.wide, detailTex));
+  const wide = new THREE.Mesh(geo, makeGroundMaterial(textures.wide, detailTex, { groundDetail }));
   wide.position.set(cx, 0, cz); wide.receiveShadow = true; scene.add(wide);
 
   // 詳細域：高解像度データがあればチャンクごとに、なければ同梱の 1 枚写真
@@ -171,7 +178,7 @@ export function buildLocalTerrain(scene, data, textures, height, detailTex) {
     const a = g.attributes.position, ccx = ch.xmin + ch.width / 2, ccz = ch.zmin + ch.depth / 2;
     for (let i = 0; i < a.count; i++) a.setY(i, height(a.getX(i) + ccx, a.getZ(i) + ccz));
     g.computeVertexNormals();
-    const mesh = new THREE.Mesh(g, makeGroundMaterial(ch.texture, detailTex));
+    const mesh = new THREE.Mesh(g, makeGroundMaterial(ch.texture, detailTex, { groundDetail }));
     mesh.position.set(ccx, 0, ccz); mesh.receiveShadow = true; scene.add(mesh); meshes.push(mesh);
   }
   return meshes;
