@@ -78,6 +78,20 @@ blender --background --python scripts/blender_import_flight.py -- \
 
 標高・航空写真の地形、太陽、カメラの動きを再現し、Beauty・Mist（深度）・Normal パスをマルチレイヤー EXR で書き出します（Blender 4.x では PNG 連番にも分けます）。動画生成 AI の深度・法線ガイドなどに使えます。
 
+`--fps 24`（既定）で動画向けのフレームレートにし、`--start-sec` と `--duration-sec` で録画の一部だけを使えます。`--shutter 0.45` でモーションブラーが掛かります。機体が対地 140 m 未満で飛んだ区間の周りには、Geometry Nodes で草が生えます（`--grass-density 0` で無効）。
+
+### 録画から AI 実写風の動画を作る（実験的）
+
+```bash
+python scripts/render_and_ai_v2v.py --blender /path/to/blender \
+  --data-dir ./assets/data --flight ~/Downloads/sekiyado_clip30s_YYYYMMDD_HHMMSS.json \
+  --out ./renders/run01 --duration-sec 28 --backend diffusers
+```
+
+Blender でレンダリングし、動画生成 AI（CogVideoX の Video-to-Video）で質感を実写風に補正してつなぎ直します。`final_ai.mp4`（AI 補正版）と `compare_before_after.mp4`（左：Blender、右：AI）ができます。NVIDIA GPU（VRAM 16 GB 程度）が必要です。手元にない場合は `scripts/colab_run_pipeline.sh` で Google Colab の GPU を使えます。`--backend dry-run` にすると、AI に入れる区間の動画とプロンプト表だけを作ります（Runway などのサービスへ手で入れる用）。
+
+地形と建物の位置は国土地理院のデータどおりですが、AI が描いた細部は実物と違うことがあります。完成動画の右下には「AI-enhanced」の表示が入ります。公開するときは表示を残し、出典（国土地理院）も明記してください。AI の出力は 8 fps・720×480 で、出力のフレームレートへは動きの補間で変換します。
+
 ## 開発者向け
 
 ```
