@@ -1,5 +1,5 @@
-# 地面の PBR 素材（assets/textures/pbr）を Poly Haven（CC0）から取得して、そのブランチにコミットします。
-# scripts/fetch-osm.mjs を変えて push したとき、または Actions タブから手動で実行できます。
+# 地面の PBR 素材（assets/data/pbr）を Poly Haven（CC0）から取得して、そのブランチにコミットします。
+# scripts/fetch-pbr.mjs を変えて push したとき、または Actions タブから手動で実行できます。
 name: Fetch PBR ground textures
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/textures/pbr
+          git add assets/data/pbr
           git diff --cached --quiet && exit 0
           git commit -m "地面の PBR 素材を更新（Poly Haven, CC0）"
           git push

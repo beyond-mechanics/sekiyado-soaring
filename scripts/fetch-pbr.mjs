@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // 地面の近距離ディテール用の写真ベース PBR 素材（芝・土・舗装）を Poly Haven（CC0）から取得する。
-//   node scripts/fetch-pbr.mjs   → assets/textures/pbr/{grass,soil,asphalt}_{albedo,normal,rough}.jpg と CREDITS.json
+//   node scripts/fetch-pbr.mjs   → assets/data/pbr/{grass,soil,asphalt}_{albedo,normal,rough}.jpg と CREDITS.json
 // 候補の素材が無くなっていたら、同じ分類の別の素材を使う。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'textures', 'pbr');
+const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'data', 'pbr');
 const RES = process.env.PBR_RES || '1k';
 const WANT = {
   grass: { ids: ['aerial_grass_rock', 'grass_path_2', 'leafy_grass', 'forrest_ground_01', 'rocky_terrain_02'], tags: ['grass', 'lawn', 'meadow'] },
