@@ -69,7 +69,7 @@ function mats() {
   };
 }
 
-function pilot(m, x, y, z) {
+export function pilot(m, x, y, z) {
   const g = new THREE.Group(); g.position.set(x, y, z);
   const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.3, 4, 10), m.cushion); torso.position.set(0, 0.05, 0.12); torso.rotation.x = -0.45;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), m.skin); head.position.set(0, 0.38, -0.04);
@@ -245,6 +245,12 @@ export function makeTowPlane() {
   parts.disc.position.z = -3.32; group.add(parts.disc);
   finish(group);
   return makeHandle(group, parts, m);
+}
+
+// Blender 製の機体（gltf-models.js）でも同じ内装を使う
+export function interiorMaterial() {
+  const m = mats();
+  return { ...m, shell: new THREE.MeshStandardMaterial({ color: 0x3a4045, roughness: 0.9, side: THREE.BackSide }), tub: m.interior };
 }
 
 // 胴体の内壁（外からは見えず、コックピット視点で内装として見える）

@@ -44,6 +44,7 @@
       "assets/data/*.jpg",
       "assets/data/*.bin",
       "assets/data/pbr/**",
+      "assets/data/models/*.glb",
       "assets/data-hires/**",
       "!assets/data-hires/.cache/**",
       "build/icon.png",

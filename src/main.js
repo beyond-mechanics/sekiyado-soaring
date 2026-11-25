@@ -12,6 +12,7 @@ import { loadTerrainData, makeHeight, makeDetailTexture, buildLocalTerrain, buil
 import { buildScenery } from './world/scenery.js';
 import { buildClouds } from './world/clouds.js';
 import { makeGlider, makeDimona, makeTowPlane } from './aircraft/models.js';
+import { loadGLB, makeGliderFromGLB } from './aircraft/gltf-models.js';
 import { makeCockpit } from './ui/cockpit.js';
 import { Input } from './input.js';
 import { makeAudio } from './audio.js';
@@ -97,7 +98,11 @@ async function init() {
     progress(0.72, '樹木と建物（航空写真から検出）'); await tick();
     scenery = buildScenery(scene, data, textures, height, quality, env);
     progress(0.86, '機体'); await tick();
-    models.glider = makeGlider(); models.dimona = makeDimona(); towModel = makeTowPlane();
+    // 複座グライダーは Blender 製モデル（assets/data/models）。読めなければ従来の近似形状
+    const duo = await Promise.all([quality > 0 ? loadGLB('data/models/duo_discus_t.glb') : null, loadGLB('data/models/duo_discus_t_lod1.glb')])
+      .then(([lod0, lod1]) => ({ lod0, lod1 })).catch(e => { console.warn('Blender 製モデルを読み込めませんでした', e); return null; });
+    models.glider = duo ? makeGliderFromGLB(duo, quality) : makeGlider();
+    models.dimona = makeDimona(); towModel = makeTowPlane();
     for (const k of ['glider', 'dimona']) { scene.add(models[k].group); models[k].group.visible = false; cockpits[k] = makeCockpit(models[k], k); }
     scene.add(towModel.group); towModel.group.visible = false;
     ropeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 20 }, () => new THREE.Vector3())), new THREE.LineBasicMaterial({ color: 0xffe9b0 }));
@@ -194,7 +199,7 @@ function aircraftChanged() {
   if ($('mode').selectedOptions[0]?.disabled) $('mode').value = isMotor ? 'powered' : 'tow';
   $('aircraftNote').textContent = isMotor
     ? '白×赤ストライプ、機首プロペラ、並列2座のモーターグライダー。エンジンで自力離陸し、上空で停止して滑空もできます。'
-    : '細長い主翼と T 字尾翼の複座練習グライダー（汎用形状）。航空機曳航で離陸し、上昇気流を探して飛びます。';
+    : '細長い主翼と T 字尾翼の複座練習グライダー。見た目は Duo Discus T（Blender で作ったモデル）。航空機曳航で離陸し、上昇気流を探して飛びます。';
   if (ready) resetFlight(false);
 }
 
