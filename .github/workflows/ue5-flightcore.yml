@@ -1,0 +1,31 @@
+name: UE5 flight core match test
+# UE5 版の飛行コア（純 C++）が JS 版と同じ軌跡を描くかを確かめる。UE 本体は不要。
+on:
+  push:
+    paths: ['src/sim/**', 'ue5/**', '.github/workflows/ue5-flightcore.yml']
+  pull_request:
+    paths: ['src/sim/**', 'ue5/**', '.github/workflows/ue5-flightcore.yml']
+  workflow_dispatch:
+
+jobs:
+  match:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Linux (g++)
+        if: runner.os == 'Linux'
+        run: ./ue5/tests/run.sh
+      - name: Windows (MSVC, UE と同じコンパイラ)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          node ue5\tests\make_reference.mjs ue5\tests\build\reference || exit /b 1
+          set CORE=ue5\SekiyadoUE\Source\SekiyadoUE\FlightCore
+          cl /nologo /std:c++17 /O2 /W4 /WX /utf-8 /fp:precise /EHsc /I%CORE% ue5\tests\flight_core_test.cpp %CORE%\Atmosphere.cpp %CORE%\FlightModel.cpp %CORE%\Tow.cpp /Fe:ue5\tests\build\flight_core_test.exe || exit /b 1
+          ue5\tests\build\flight_core_test.exe ue5\tests\build\reference
