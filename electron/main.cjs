@@ -45,6 +45,10 @@ function createWindow() {
     if (input.key === 'F11') { win.setFullScreen(!win.isFullScreen()); e.preventDefault(); }
     if (input.key === 'F12' && !app.isPackaged) win.webContents.toggleDevTools();
   });
+  // フライト録画の JSON は保存ダイアログを出さず（飛行を中断しない）ダウンロードフォルダーへ保存
+  win.webContents.session.on('will-download', (e, item) => {
+    item.setSavePath(path.join(app.getPath('downloads'), path.basename(item.getFilename())));
+  });
   win.loadURL('app://sim/index.html');
   if (process.env.SEKIYADO_SELFTEST) selfTest(win, process.env.SEKIYADO_SELFTEST);
 }

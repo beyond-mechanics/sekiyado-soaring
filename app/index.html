@@ -14,6 +14,8 @@
   <div class="top">
     <span id="fps" class="live"></span>
     <button id="infoBtn" title="操作方法">? 操作</button>
+    <button id="recBtn" hidden title="フライト軌道の録画 開始／停止（Blender・動画化用 JSON）">● 録画 [V]</button>
+    <button id="clipBtn" hidden title="直近30秒の軌道を JSON で保存">30秒保存 [Shift+V]</button>
     <button id="pauseBtn" hidden>一時停止 [P]</button>
     <button id="menuTopBtn" hidden>メニュー [Esc]</button>
   </div>
@@ -71,7 +73,7 @@
   </div></details>
   <button class="primary" id="fly" disabled>地形を読み込み中…</button>
   <div class="hint">矢印キー / ジョイスティック / ゲームパッドで操縦 · F11 全画面</div>
-  <div class="version">DESKTOP EDITION · v5.0 · <span id="dataInfo"></span></div>
+  <div class="version">DESKTOP EDITION · v5.1 · <span id="dataInfo"></span></div>
 </section>
 
 <div id="loading"><div class="bar"><i id="loadBar"></i></div><span id="loadText">地形を準備しています</span></div>
@@ -115,6 +117,7 @@
     <tr><td>C</td><td>視点切替：追尾 → コックピット → 外部（マウスで回転） → 地上</td></tr>
     <tr><td>右ドラッグ / ホイール</td><td>視点を見回す / ズーム。ダブルクリックで正面に戻す</td></tr>
     <tr><td>H</td><td>HUD 表示切替</td></tr>
+    <tr><td>V / Shift+V</td><td>フライト軌道の録画 開始・停止 / 直近30秒を保存（JSON、ダウンロードフォルダー。Blender・動画化用）</td></tr>
     <tr><td>P / Space</td><td>一時停止 · Esc メニュー · F11 全画面</td></tr>
   </table>
   <h3>ジョイスティック・ゲームパッド</h3>

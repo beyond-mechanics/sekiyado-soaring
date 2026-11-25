@@ -68,7 +68,7 @@ function crownGeometry(conifer) {
   g.computeVertexNormals(); return g;
 }
 
-export function buildScenery(scene, data, textures, height, quality) {
+export function buildScenery(scene, data, textures, height, quality, env) {
   const group = new THREE.Group(); scene.add(group);
   const sc = data.scenery, detail = data.detail, meta = data.meta;
   const obj = new THREE.Object3D(), col = new THREE.Color();
@@ -92,6 +92,30 @@ export function buildScenery(scene, data, textures, height, quality) {
 
   // 1 km 四方ごとにインスタンス化（視錐台・影カメラのカリングが効くように）
   const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92 });
+  // 逆光の葉の透過光：太陽の方を見たとき、葉を透けた光（葉の色×太陽光）を少し加える。
+  // トーンマッピングと霞の前（outgoingLight）に足すので、どの画質でも明るさの扱いが同じになる。
+  crownMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uSunDir = { value: env.sunDir };
+    sh.uniforms.uSunRadiance = { value: env.sunRadiance };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;')
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        {
+          vec4 lw = vec4(transformed, 1.0);
+          #ifdef USE_INSTANCING
+            lw = instanceMatrix * lw;
+          #endif
+          vLeafWPos = (modelMatrix * lw).xyz;
+        }`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;\nuniform vec3 uSunDir;\nuniform vec3 uSunRadiance;')
+      .replace('#include <opaque_fragment>', `{
+          float back = pow(max(dot(normalize(vLeafWPos - cameraPosition), uSunDir), 0.0), 4.0);
+          outgoingLight += diffuseColor.rgb * uSunRadiance * (back * 0.45 * RECIPROCAL_PI * smoothstep(0.05, 0.4, uSunDir.y));
+        }
+        #include <opaque_fragment>`);
+  };
+  crownMat.customProgramCacheKey = () => 'treeCrown51';
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4b3c, roughness: 1 });
   const geos = { broad: crownGeometry(false), conifer: crownGeometry(true), trunk: new THREE.CylinderGeometry(0.16, 0.3, 1, 6).translate(0, 0.5, 0) };
   const cells = new Map();
@@ -168,13 +192,18 @@ export function buildScenery(scene, data, textures, height, quality) {
   group.add(sock);
 
   // 川面：空を映す水面（法線マップを動かして波を表現）
-  const verts = [], uv = [], idx = [];
+  // v5.1：左岸・中央・右岸の 3 列にして、岸辺の数 m を透明へぼかす（岸の直線的な縁を目立たなくする）
+  const verts = [], uv = [], banks = [], idx = [];
   sc.river.forEach((p, i) => {
     const prev = sc.river[Math.max(0, i - 1)], next = sc.river[Math.min(sc.river.length - 1, i + 1)], dx = next.x - prev.x, dz = next.z - prev.z, n = Math.hypot(dx, dz) || 1;
-    for (const side of [-1, 1]) { const x = p.x + dz / n * p.w / 2 * side, z = p.z - dx / n * p.w / 2 * side; verts.push(x, height(x, z) + 0.15, z); uv.push(x / 30, z / 30); }
-    if (i > 0) { const k = i * 2; idx.push(k - 2, k, k - 1, k - 1, k, k + 1); }
+    for (const side of [-1, 0, 1]) {
+      const x = p.x + dz / n * p.w / 2 * side, z = p.z - dx / n * p.w / 2 * side;
+      verts.push(x, height(x, z) + 0.15, z); uv.push(x / 30, z / 30); banks.push(side === 0 ? 1 : 0);
+    }
+    if (i > 0) { const k = i * 3; idx.push(k - 3, k, k - 2, k - 2, k, k + 1, k - 2, k + 1, k - 1, k - 1, k + 1, k + 2); }
   });
-  const wg = new THREE.BufferGeometry(); wg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3)); wg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); wg.setIndex(idx); wg.computeVertexNormals();
+  const wg = new THREE.BufferGeometry(); wg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3)); wg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  wg.setAttribute('aBank', new THREE.Float32BufferAttribute(banks, 1)); wg.setIndex(idx); wg.computeVertexNormals();
   const N = 128, nd = new Uint8Array(N * N * 4);
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
     const k = (j * N + i) * 4, a = i / N * Math.PI * 2, b = j / N * Math.PI * 2;
@@ -184,6 +213,23 @@ export function buildScenery(scene, data, textures, height, quality) {
   }
   const nt = new THREE.DataTexture(nd, N, N); nt.wrapS = nt.wrapT = THREE.RepeatWrapping; nt.repeat.set(1, 1); nt.needsUpdate = true; nt.generateMipmaps = true; nt.minFilter = THREE.LinearMipmapLinearFilter;
   const wm = new THREE.MeshPhysicalMaterial({ color: 0x26393a, roughness: 0.12, metalness: 0, normalMap: nt, normalScale: new THREE.Vector2(0.18, 0.18), transparent: true, opacity: 0.9, envMapIntensity: 0.9 });
+  // 波：向きと速さの違う 2 層の法線を重ねて、模様の繰り返しを目立たなくする
+  const waterTime = { value: 0 };
+  wm.onBeforeCompile = (sh) => {
+    sh.uniforms.uWaterTime = waterTime;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aBank;\nvarying float vBank;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBank = aBank;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vBank;\nuniform float uWaterTime;')
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= smoothstep(0.0, 0.26, vBank);')
+      .replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace(
+        'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
+        `vec3 wA = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;
+        vec3 wB = texture2D( normalMap, vNormalMapUv * 1.73 + vec2( -uWaterTime * 0.007, uWaterTime * 0.009 ) ).xyz * 2.0 - 1.0;
+        vec3 mapN = normalize( vec3( wA.xy + wB.xy * 0.75, wA.z * wB.z ) );`));
+  };
+  wm.customProgramCacheKey = () => 'river51';
   const water = new THREE.Mesh(wg, wm); water.receiveShadow = true; group.add(water);
 
   return {
@@ -192,7 +238,7 @@ export function buildScenery(scene, data, textures, height, quality) {
       const agl = camPos.y - height(camPos.x, camPos.z);
       const far2 = treeRange * treeRange;
       for (const m of chunkMeshes) { const c = m.userData.center; m.visible = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2 < far2 + agl * agl * 2; }
-      nt.offset.set(time * 0.004, time * 0.011);
+      nt.offset.set(time * 0.004, time * 0.011); waterTime.value = time;
       // 吹き流し：風下へ向き、風速 15 kt（約 7.7 m/s）で水平
       pivot.rotation.y = -windTo + Math.PI;
       const lift = Math.min(1, windSpeed / 7.7);
