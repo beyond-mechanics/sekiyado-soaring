@@ -57,6 +57,7 @@ function mats() {
   return {
     white: new THREE.MeshPhysicalMaterial({ color: 0xf6f5ef, roughness: 0.22, metalness: 0, clearcoat: 0.8, clearcoatRoughness: 0.12 }),
     red: new THREE.MeshPhysicalMaterial({ color: 0xb2261d, roughness: 0.3, clearcoat: 0.7 }),
+    navy: new THREE.MeshPhysicalMaterial({ color: 0x1f3a8a, roughness: 0.25, clearcoat: 0.8, clearcoatRoughness: 0.12 }),
     black: new THREE.MeshStandardMaterial({ color: 0x1d2329, roughness: 0.55 }),
     tire: new THREE.MeshStandardMaterial({ color: 0x15181a, roughness: 0.9 }),
     metal: new THREE.MeshStandardMaterial({ color: 0xb9bec2, roughness: 0.3, metalness: 0.85 }),
@@ -104,8 +105,16 @@ export function makeGlider() {
     [-0.7, 0.33, 0.42, 0.03], [0.3, 0.25, 0.32, 0.06], [1.5, 0.16, 0.22, 0.1], [2.7, 0.11, 0.16, 0.15], [3.8, 0.08, 0.12, 0.2], [4.35, 0.05, 0.08, 0.22]
   ]), m.white);
   group.add(body, interiorShell(body, m));
-  // 機首の赤
-  const noseCap = new THREE.Mesh(loftBody([[-3.96, 0.01, 0.01, -0.05], [-3.83, 0.205, 0.245, -0.07], [-3.7, 0.25, 0.3, -0.065]]), m.red); group.add(noseCap);
+  // 機首の紺（写真の Duo Discus T）。キャノピーの前まで斜めに切れ上がる
+  const noseCap = new THREE.Mesh(loftBody([[-3.96, 0.01, 0.01, -0.05], [-3.83, 0.205, 0.245, -0.07], [-3.62, 0.275, 0.33, -0.06], [-3.4, 0.3, 0.37, -0.05]]), m.navy); group.add(noseCap);
+  // 胴体側面の紺の細い線と機種名（左右）
+  const gl = decalTexture([{ text: 'Duo Discus T', x: 300, y: 86, color: '#1f3a8a', font: 'italic 64px serif' }]);
+  for (const side of [-1, 1]) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.018), new THREE.MeshBasicMaterial({ color: 0x1f3a8a, polygonOffset: true, polygonOffsetFactor: -2 }));
+    line.position.set(side * 0.372, -0.08, -2.2); line.rotation.y = side * Math.PI / 2; group.add(line);
+    const name = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.19), new THREE.MeshBasicMaterial({ map: gl, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
+    name.position.set(side * 0.372, -0.17, -1.75); name.rotation.y = side * Math.PI / 2; group.add(name);
+  }
   // キャノピー（タンデム複座）と内装
   const canopy = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2), m.glass);
   canopy.scale.set(0.33, 0.36, 1.45); canopy.position.set(0, 0.28, -2.05); group.add(canopy);
@@ -122,9 +131,12 @@ export function makeGlider() {
     const hinge = { x: 3.2, y: 0.27, z: -0.47 + 0.78 * 1.15 };
     const ail = hinged(group, loftWing(st.slice(1, 4), { side, f0: 0.78, hinge }), m.white, { x: 3.2 * side, y: 0.27, z: hinge.z }, new THREE.Vector3(1, 0, 0));
     ail.userData.side = side; parts.ailerons.push(ail);
-    const tip = new THREE.Mesh(loftWing(st.slice(3), { side }), m.red); group.add(tip);
-    // エアブレーキ（上面から立ち上がる板）
-    const ab = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.02, 0.06), m.metal); ab.position.set(side * 2.5, 0.25, -0.05); ab.rotation.z = side * 0.06;
+    const tip = new THREE.Mesh(loftWing(st.slice(3), { side }), m.white); group.add(tip);
+    // ウイングレット（翼端で上へ折れ曲がる小翼）
+    const wl = new THREE.Mesh(loftWing([{ x: 0, z: -0.08, y: 0, c: 0.36 }, { x: 0.42, z: 0.02, y: 0, c: 0.16 }], { th: 0.1, camber: 0 }), m.white);
+    wl.rotation.z = Math.PI / 2 - side * 0.25; wl.position.set(side * 8.5, 0.66, 0); group.add(wl);
+    // エアブレーキ（上面から立ち上がる板。上端は赤く塗ってある）
+    const ab = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.02, 0.06), m.red); ab.position.set(side * 2.5, 0.25, -0.05); ab.rotation.z = side * 0.06;
     ab.scale.y = 0.01; group.add(ab); (parts.brakes ||= []).push(ab);
   }
   // 尾翼：T字尾翼
@@ -179,7 +191,6 @@ export function makeDimona() {
     // 主脚
     const strut = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.7, 0.12), m.white); strut.position.set(side * 0.95, -0.6, 0.15); strut.rotation.z = -side * 0.38; group.add(strut);
     const w = wheel(m, 0.27, 0.14); w.position.set(side * 1.08, -0.97, 0.15); group.add(w); (parts.wheels ||= []).push(w);
-    const pant = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), m.white); pant.scale.set(0.12, 0.2, 0.48); pant.position.set(side * 1.08, -0.86, 0.1); group.add(pant);
   }
   // 尾翼：T字尾翼
   const fin = new THREE.Mesh(loftWing([{ x: 0.05, z: 2.55, y: 0.1, c: 0.95 }, { x: 1.57, z: 3.0, y: 0.1, c: 0.45 }], { th: 0.1, camber: 0 }), m.white);
@@ -196,7 +207,10 @@ export function makeDimona() {
   const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.5, 28), m.white); spinner.rotation.x = -Math.PI / 2; spinner.position.z = -3.28; group.add(spinner);
   parts.prop = new THREE.Group(); parts.prop.position.z = -3.1; group.add(parts.prop);
   for (const sign of [-1, 1]) {
-    const blade = new THREE.Mesh(loftWing([{ x: 0.08, z: -0.07, y: 0, c: 0.15 }, { x: 0.86, z: -0.04, y: 0, c: 0.09 }], { th: 0.12, camber: 0.02 }), m.black);
+    // 白いプロペラで、先端だけ赤（写真の機体）
+    const blade = new THREE.Group();
+    blade.add(new THREE.Mesh(loftWing([{ x: 0.08, z: -0.07, y: 0, c: 0.15 }, { x: 0.74, z: -0.045, y: 0, c: 0.1 }], { th: 0.12, camber: 0.02 }), m.white));
+    blade.add(new THREE.Mesh(loftWing([{ x: 0.74, z: -0.045, y: 0, c: 0.1 }, { x: 0.86, z: -0.04, y: 0, c: 0.09 }], { th: 0.12, camber: 0.02 }), m.red));
     blade.rotation.z = sign > 0 ? Math.PI / 2 : -Math.PI / 2; blade.rotation.y = 0.25 * sign; parts.prop.add(blade);
   }
   parts.disc = new THREE.Mesh(new THREE.CircleGeometry(0.9, 40), new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));

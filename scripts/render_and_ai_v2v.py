@@ -22,6 +22,7 @@ SEKIYADO SOARING：フライト録画 JSON → Blender で動画レンダリン�
 """
 
 import argparse
+import os
 import math
 import shutil
 import subprocess
@@ -60,7 +61,8 @@ def probe_frames(video):
 
 def render_with_blender(args, out):
     script = Path(__file__).resolve().parent / "blender_import_flight.py"
-    cmd = [args.blender, "--background", "--python", script, "--",
+    # --python-exit-code：スクリプトがエラーで止まったら Blender も失敗で終わらせる（既定では成功扱いになる）
+    cmd = [args.blender, "--background", "--python-exit-code", "1", "--python", script, "--",
            "--data-dir", args.data_dir, "--flight", args.flight, "--out", out,
            "--fps", args.fps, "--start-sec", args.start_sec, "--duration-sec", args.duration_sec,
            "--shutter", args.shutter, "--grass-density", args.grass_density,
@@ -72,21 +74,41 @@ def render_with_blender(args, out):
 
 
 def encode_sequences(out, fps):
-    """PNG 連番（Blender 4.x のコンポジターが書き出したもの）を MP4 にする"""
+    """Blender のコンポジターが書き出した PNG 連番（beauty/ mist/ normal/）を MP4 にする"""
     made = {}
     for name in ("beauty", "mist", "normal"):
-        seq = sorted((out / name).glob("frame_*.png"))
+        seq = sorted((out / name).glob("*.png"))
         if not seq:
             continue
+        # 版によってファイル名の付き方が違うので、frame_0001.png … に揃えてから読む
+        if [p.name for p in seq] != [f"frame_{i:04d}.png" for i in range(1, len(seq) + 1)]:
+            tmp = [p.rename(p.with_name(f"__tmp_{i:05d}.png")) for i, p in enumerate(seq, 1)]
+            for i, p in enumerate(tmp, 1):
+                p.rename(p.with_name(f"frame_{i:04d}.png"))
         dst = out / f"{name}.mp4"
-        run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", fps, "-start_number", int(seq[0].stem.split("_")[-1]),
+        run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", fps, "-start_number", 1,
              "-i", out / name / "frame_%04d.png", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", dst],
             f"{name} の連番 → {dst.name}")
         made[name] = dst
     if "beauty" not in made:
-        raise SystemExit(f"{out}/beauty/ に PNG がありません。Blender 4.x でレンダリングしたか確認してください"
-                         "（Blender 5 では EXR だけが出力されます）。")
+        raise SystemExit(f"{out}/beauty/ に PNG がありません。Blender のログに「PNG の分割出力を設定できませんでした」が出ていないか確認してください。")
     return made
+
+
+def find_blender(given):
+    """Blender の実行ファイルを探す。指定がなければ PATH、Windows の標準の場所、macOS のアプリの順"""
+    if given and given != "blender":
+        return given
+    if shutil.which("blender"):
+        return "blender"
+    cands = sorted(Path(os.environ.get("ProgramFiles", r"C:\Program Files"), "Blender Foundation").glob("Blender */blender.exe"),
+                   key=lambda p: [int(x) for x in p.parent.name.split()[-1].split(".") if x.isdigit()], reverse=True)
+    cands.append(Path("/Applications/Blender.app/Contents/MacOS/Blender"))
+    for c in cands:
+        if c.exists():
+            print(f"[PIPE] Blender：{c}")
+            return str(c)
+    raise SystemExit("Blender が見つかりません。--blender で実行ファイルを指定してください。")
 
 
 def ai_input_filter():
@@ -243,6 +265,7 @@ def main():
     if not args.skip_blender:
         if not args.flight:
             raise SystemExit("--flight を指定してください")
+        args.blender = find_blender(args.blender)
         render_with_blender(args, out)
     if args.skip_blender and (out / "beauty.mp4").exists() and not (out / "beauty").exists():
         beauty = out / "beauty.mp4"

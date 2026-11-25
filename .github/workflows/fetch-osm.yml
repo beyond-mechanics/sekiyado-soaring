@@ -1,0 +1,27 @@
+# OpenStreetMap のデータ（assets/data/osm.json）を取得して、そのブランチにコミットします。
+# scripts/fetch-osm.mjs を変えて push したとき、または Actions タブから手動で実行できます。
+name: Fetch OpenStreetMap data
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths: ['scripts/fetch-osm.mjs', '.github/workflows/fetch-osm.yml']
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/fetch-osm.mjs
+      - name: Commit osm.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/data/osm.json
+          git diff --cached --quiet && exit 0
+          git commit -m "OpenStreetMap のデータを更新（© OpenStreetMap contributors, ODbL）"
+          git push

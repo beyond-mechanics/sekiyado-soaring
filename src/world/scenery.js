@@ -1,6 +1,8 @@
 // 景観：航空写真から自動検出した樹木、格納庫、滑走路標識、吹き流し、川面、草。
 import * as THREE from 'three';
 import { RUNWAY_HEADING, RUNWAY_LENGTH, inRunway } from '../sim/flight.js';
+import { buildOsmBuildings, makeLandUse, fillWoods } from './osm.js';
+import { makeTreeKit, treeLook, seasonOf } from './trees.js';
 
 let seed = 151;
 function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
@@ -9,6 +11,21 @@ function imageData(img) {
   const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
   const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
   return g.getImageData(0, 0, img.width, img.height);
+}
+
+// 航空写真の色（sRGB 0〜1）を世界座標で引く。詳細域は高解像度の分割画像、外側は広域の画像
+function makePhotoSampler(textures, meta) {
+  const srcs = [...(textures.detailChunks || []).map(ch => ({ ...ch, d: imageData(ch.texture.image) })),
+    { xmin: meta.xmin, zmin: meta.zmin, width: meta.size, depth: meta.size, d: imageData(textures.wide.image) }];
+  return (x, z) => {
+    for (const s of srcs) {
+      const u = (x - s.xmin) / s.width, v = (z - s.zmin) / s.depth;
+      if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+      const W = s.d.width, H = s.d.height, k = (Math.floor(v * H) * W + Math.floor(u * W)) * 4, p = s.d.data;
+      return [p[k] / 255, p[k + 1] / 255, p[k + 2] / 255];
+    }
+    return null;
+  };
 }
 
 function distToRiver(river, x, z) {
@@ -51,23 +68,6 @@ function detectTrees(img, rect, cell, density, river, exclude) {
   return out;
 }
 
-function crownGeometry(conifer) {
-  if (conifer) {
-    const g = new THREE.ConeGeometry(1, 1, 9, 4); g.translate(0, 0.5, 0);
-    const p = g.attributes.position;
-    for (let i = 0; i < p.count; i++) { const y = p.getY(i); const w = 1 + Math.sin(y * 18) * 0.12; p.setX(i, p.getX(i) * w); p.setZ(i, p.getZ(i) * w); }
-    g.computeVertexNormals(); return g;
-  }
-  const g = new THREE.IcosahedronGeometry(1, 1), p = g.attributes.position, v = new THREE.Vector3();
-  for (let i = 0; i < p.count; i++) {
-    v.fromBufferAttribute(p, i);
-    const n = 1 + 0.18 * Math.sin(v.x * 5.1 + v.y * 3.3) * Math.cos(v.z * 4.7 - v.y * 2.1) + 0.08 * Math.sin(v.x * 13 + v.z * 11);
-    v.multiplyScalar(n); if (v.y < -0.3) v.y = -0.3 + (v.y + 0.3) * 0.4;
-    p.setXYZ(i, v.x, v.y, v.z);
-  }
-  g.computeVertexNormals(); return g;
-}
-
 export function buildScenery(scene, data, textures, height, quality, env) {
   const group = new THREE.Group(); scene.add(group);
   const sc = data.scenery, detail = data.detail, meta = data.meta;
@@ -78,7 +78,15 @@ export function buildScenery(scene, data, textures, height, quality, env) {
     return Math.abs(along) < RUNWAY_LENGTH / 2 + 60 && Math.abs(cross) < 70;
   };
   const inBuildings = (x, z) => sc.buildings.some(b => Math.abs(x - b.x) < b.w / 2 + 4 && Math.abs(z - b.z) < b.d / 2 + 4);
-  const exclude = (x, z) => nearRunway(x, z) || inBuildings(x, z);
+  const baseExclude = (x, z) => nearRunway(x, z) || inBuildings(x, z);
+
+  // OpenStreetMap があれば：建物を輪郭から生成し、建物・道路・農地・草地の上には木を置かない。樹林は範囲の中を均一に埋める
+  let osmBuildings = null, land = null;
+  if (data.osm) {
+    osmBuildings = buildOsmBuildings(group, data.osm, height, makePhotoSampler(textures, meta), quality, baseExclude);
+    land = makeLandUse(data.osm, osmBuildings.footprints);
+  }
+  const exclude = land ? (x, z) => baseExclude(x, z) || land.noTree(x, z) || !!land.inWood(x, z) : baseExclude;
 
   // 樹木：写真から検出（詳細域は細かく、広域は粗く）＋旧版の手動配置
   const trees = sc.trees.map(t => ({ ...t, conifer: rand() < 0.3 }));
@@ -89,35 +97,22 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   const wideTrees = detectTrees(textures.wide.image, { xmin: meta.xmin, zmin: meta.zmin, width: meta.size, depth: meta.size }, 14, density * 0.9, sc.river,
     (x, z) => (x > detailRect.xmin && x < detailRect.xmin + detailRect.width && z > detailRect.zmin && z < detailRect.zmin + detailRect.depth) || exclude(x, z));
   trees.push(...wideTrees);
+  if (land) trees.push(...fillWoods(land, [16, 11, 8.5, 7][quality], rand, (x, z) => !baseExclude(x, z) && !land.noTree(x, z)).map(t => ({ ...t, wood: true })));
 
-  // 1 km 四方ごとにインスタンス化（視錐台・影カメラのカリングが効くように）
-  const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92 });
-  // 逆光の葉の透過光：太陽の方を見たとき、葉を透けた光（葉の色×太陽光）を少し加える。
-  // トーンマッピングと霞の前（outgoingLight）に足すので、どの画質でも明るさの扱いが同じになる。
-  crownMat.onBeforeCompile = (sh) => {
-    sh.uniforms.uSunDir = { value: env.sunDir };
-    sh.uniforms.uSunRadiance = { value: env.sunRadiance };
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;')
-      .replace('#include <project_vertex>', `#include <project_vertex>
-        {
-          vec4 lw = vec4(transformed, 1.0);
-          #ifdef USE_INSTANCING
-            lw = instanceMatrix * lw;
-          #endif
-          vLeafWPos = (modelMatrix * lw).xyz;
-        }`);
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;\nuniform vec3 uSunDir;\nuniform vec3 uSunRadiance;')
-      .replace('#include <opaque_fragment>', `{
-          float back = pow(max(dot(normalize(vLeafWPos - cameraPosition), uSunDir), 0.0), 4.0);
-          outgoingLight += diffuseColor.rgb * uSunRadiance * (back * 0.45 * RECIPROCAL_PI * smoothstep(0.05, 0.4, uSunDir.y));
-        }
-        #include <opaque_fragment>`);
-  };
-  crownMat.customProgramCacheKey = () => 'treeCrown51';
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4b3c, roughness: 1 });
-  const geos = { broad: crownGeometry(false), conifer: crownGeometry(true), trunk: new THREE.CylinderGeometry(0.16, 0.3, 1, 6).translate(0, 0.5, 0) };
+  // 樹種：河畔は広葉樹（エノキ・ヤナギなど）、樹林は杉と広葉樹、集落まわりは屋敷林（杉・竹・広葉樹）
+  const season = seasonOf();
+  for (const t of trees) {
+    const r = rand();
+    if (t.wood) t.kind = t.conifer || r < 0.4 ? 'conifer' : r < 0.95 ? 'broad' : 'bamboo';
+    else if (distToRiver(sc.river, t.x, t.z) < 150) t.kind = r < 0.85 ? 'broad' : r < 0.92 ? 'bamboo' : 'conifer';
+    else t.kind = t.conifer ? 'conifer' : r < 0.16 ? 'bamboo' : 'broad';
+    if (t.kind === 'broad' && rand() < season.bare) t.kind = 'bare';  // 冬は落葉樹の多くが葉を落とす
+    if (t.kind === 'bamboo') t.h = 9 + rand() * 6;
+    if (t.kind === 'conifer') t.h = Math.max(t.h, 12) * (1.1 + rand() * 0.3);
+  }
+
+  // 1 km 四方ごと・樹種ごとに、近く用（詳しい形）と遠く用（簡略形）の InstancedMesh を作る（行列は共有）
+  const kit = makeTreeKit(quality, env);
   const cells = new Map();
   for (const t of trees) {
     const key = Math.floor(t.x / 1000) + ',' + Math.floor(t.z / 1000);
@@ -126,22 +121,23 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   }
   const chunkMeshes = [], treeRange = [2200, 3500, 5000, 7000][quality];
   for (const list of cells.values()) {
-    for (const kind of ['broad', 'conifer']) {
-      const sub = list.filter(t => (kind === 'conifer') === !!t.conifer);
+    for (const kind of ['broad', 'bare', 'conifer', 'bamboo']) {
+      const sub = list.filter(t => t.kind === kind);
       if (!sub.length) continue;
-      const crowns = new THREE.InstancedMesh(geos[kind], crownMat, sub.length);
-      const trunks = new THREE.InstancedMesh(geos.trunk, trunkMat, sub.length);
+      const near = new THREE.InstancedMesh(kit.geos[kind].near, kit.mat, sub.length);
       sub.forEach((t, i) => {
-        const y = height(t.x, t.z), h = t.h;
-        obj.rotation.set(0, rand() * 6.28, 0);
-        obj.position.set(t.x, y, t.z); obj.scale.set(1, h * 0.55, 1); obj.updateMatrix(); trunks.setMatrixAt(i, obj.matrix);
-        if (kind === 'conifer') { obj.position.set(t.x, y + h * 0.18, t.z); obj.scale.set(h * 0.2, h * 0.85, h * 0.2); col.setHSL(0.27 + rand() * 0.05, 0.28 + rand() * 0.15, 0.11 + rand() * 0.05); }
-        else { obj.position.set(t.x, y + h * 0.58, t.z); obj.rotation.set((rand() - 0.5) * 0.3, rand() * 6.28, (rand() - 0.5) * 0.3); obj.scale.set(h * (0.3 + rand() * 0.1), h * (0.32 + rand() * 0.08), h * (0.3 + rand() * 0.1)); col.setHSL(0.2 + rand() * 0.07, 0.25 + rand() * 0.2, 0.14 + rand() * 0.08); }
-        obj.updateMatrix(); crowns.setMatrixAt(i, obj.matrix); crowns.setColorAt(i, col);
+        const y = height(t.x, t.z), h = t.h, sx = 0.85 + rand() * 0.3;
+        obj.position.set(t.x, y - 0.2, t.z); obj.rotation.set((rand() - 0.5) * 0.06, rand() * 6.28, (rand() - 0.5) * 0.06);
+        obj.scale.set(h * sx, h, h * (0.85 + rand() * 0.3)); obj.updateMatrix();
+        near.setMatrixAt(i, obj.matrix); near.setColorAt(i, treeLook(kind, rand, col, season));
       });
-      for (const m of [crowns, trunks]) {
-        m.castShadow = quality > 0; m.receiveShadow = true; m.computeBoundingSphere();
-        m.userData.center = m.boundingSphere.center.clone(); group.add(m); chunkMeshes.push(m);
+      const far = new THREE.InstancedMesh(kit.geos[kind].far, kit.mat, sub.length);
+      far.instanceMatrix = near.instanceMatrix; far.instanceColor = near.instanceColor;
+      near.computeBoundingSphere(); far.boundingSphere = near.boundingSphere;
+      for (const m of [near, far]) {
+        m.castShadow = quality > 0; m.receiveShadow = true;
+        m.userData.center = near.boundingSphere.center.clone(); m.userData.lod = m === near ? 'near' : 'far';
+        group.add(m); chunkMeshes.push(m);
       }
     }
   }
@@ -233,11 +229,17 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   const water = new THREE.Mesh(wg, wm); water.receiveShadow = true; group.add(water);
 
   return {
-    group, treeCount: trees.length,
+    group, treeCount: trees.length, buildingCount: osmBuildings?.count || 0,
     update(camPos, time, windTo, windSpeed) {
       const agl = camPos.y - height(camPos.x, camPos.z);
       const far2 = treeRange * treeRange;
-      for (const m of chunkMeshes) { const c = m.userData.center; m.visible = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2 < far2 + agl * agl * 2; }
+      const bRange2 = [2500, 5000, 8000, 9000][quality] ** 2 + agl * agl * 2;
+      for (const m of osmBuildings?.meshes || []) { const c = m.userData.center; m.visible = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2 < bRange2; }
+      const near2 = kit.nearRange ** 2 + agl * agl;
+      for (const m of chunkMeshes) {
+        const c = m.userData.center, d2 = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2;
+        m.visible = d2 < far2 + agl * agl * 2 && (m.userData.lod === 'near') === (d2 < near2);
+      }
       nt.offset.set(time * 0.004, time * 0.011); waterTime.value = time;
       // 吹き流し：風下へ向き、風速 15 kt（約 7.7 m/s）で水平
       pivot.rotation.y = -windTo + Math.PI;
