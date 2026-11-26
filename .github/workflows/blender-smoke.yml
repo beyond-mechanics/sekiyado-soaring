@@ -1,11 +1,12 @@
 # Blender スクリプト（scripts/blender_import_flight.py）を Blender 4.2 LTS と 5.2 LTS で実際に動かして確かめます。
 # 5 秒のテストフライトを小さな解像度・CPU でレンダリングし、beauty / mist / normal の連番と MP4 ができるかを見ます。
+# 1 回で最大 40 分 × 2 本かかるため、費用節約で手動実行だけにしています（Actions タブ → "Blender smoke test" → Run workflow）。
 name: Blender smoke test
 on:
   workflow_dispatch:
-  push:
-    branches: ['claude/**']
-    paths: ['scripts/blender_import_flight.py', 'scripts/render_and_ai_v2v.py', 'scripts/make_test_flight.py', '.github/workflows/blender-smoke.yml']
+concurrency:
+  group: blender-smoke-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   render:
     strategy:
