@@ -21,6 +21,8 @@ const AircraftParams& DimonaParams();   // SUPER DIMONA TC100
 const AircraftParams* FindAircraft(const std::string& id);
 
 constexpr double kRunwayHeading = -0.131;   // RWY 36 の方位（北から時計回り, rad）
+// 離陸・着陸の向き：普段は RWY 18（北端から南へ）。JS 版 flight.js の TAKEOFF_HEADING と同じ
+constexpr double kTakeoffHeading = kRunwayHeading + 3.14159265358979323846;
 constexpr double kRunwayLength = 1500, kRunwayWidth = 90;
 
 void RunwayCoords(double x, double z, double& along, double& cross);
