@@ -64,6 +64,7 @@ function makeMaterialMask(osm, rect, size) {
     g.beginPath(); r.pts.forEach((p, i) => { const [u, v] = P(p); i ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke();
   }
   const t = new THREE.CanvasTexture(c);
+  t.flipY = false; // キャンバスの行 = z（南向き）。世界座標からそのまま引く
   t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = true;
   t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
   return t;
@@ -106,7 +107,7 @@ vec3 pbrW; float pbrFade;
 // 素材の色を平均色で割って「明るさ・色のゆらぎ」だけにする（色そのものは航空写真に任せる）
 vec3 pbrDetail(sampler2D t, vec2 uv, vec3 avg) {
   vec3 r = texture2D(t, uv).rgb / (avg + 1e-3);
-  return mix(vec3(dot(r, vec3(0.299, 0.587, 0.114))), r, 0.2);
+  return mix(vec3(dot(r, vec3(0.299, 0.587, 0.114))), r, 0.1);
 }
 `;
 
@@ -128,7 +129,7 @@ export const GROUND_PBR_ALBEDO = /* glsl */`
              + pbrDetail(pbrAsphaltAlbedo, vWPos.xz / 5.5, pbrMean[2]) * wA;
     // 遠目では 2 段目の大きなスケールも重ねて、繰り返し模様を目立たなくする
     vec3 det2 = pbrDetail(pbrGrassAlbedo, vWPos.xz / 23.0, pbrMean[0]) * wG + pbrDetail(pbrSoilAlbedo, vWPos.xz / 19.0, pbrMean[1]) * wS + vec3(wA);
-    diffuseColor.rgb *= mix(vec3(1.0), det * mix(vec3(1.0), det2, 0.5), pbrFade * 0.85);
+    diffuseColor.rgb *= mix(vec3(1.0), det * mix(vec3(1.0), det2, 0.5), pbrFade * 0.6);
     // 素材の明暗を重ねると色が少しくすむので、芝だけ彩度を戻す
     float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
     diffuseColor.rgb = max(mix(vec3(lum), diffuseColor.rgb, 1.0 + 0.3 * wG * pbrFade), 0.0);

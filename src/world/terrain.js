@@ -227,7 +227,8 @@ export function buildFarTerrain(scene, data, renderer, quality) {
     const hz = far.h[Math.min(far.N, j * step + 1) * (far.N + 1) + i * step] - h;
     const slope = Math.hypot(hx, hz) / (2 * far.half / far.N);
     const inside = x > meta.xmin + inset && x < meta.xmin + meta.size - inset && z > meta.zmin + inset && z < meta.zmin + meta.size - inset;
-    p.setY(k, (inside ? h - 6 : h) - (x * x + z * z) / (2 * R_EARTH));
+    // 広域地形の下へ十分に沈める（江戸川の河道は周りより 10 m 近く低く、遠景地形が突き出して見えていた）
+    p.setY(k, (inside ? h - 40 : h) - (x * x + z * z) / (2 * R_EARTH));
     // 土地被覆（簡易推定）
     const dT = Math.hypot(x - urbanTokyo.x, z - urbanTokyo.z) / 1000;
     const urban = THREE.MathUtils.clamp(1.15 - dT / 32, 0, 1) * 0.9 + vnoise(x / 4000, z / 4000) * 0.35 - 0.12;
