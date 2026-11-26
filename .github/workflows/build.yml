@@ -1,26 +1,64 @@
 # Windows と Mac のインストーラーを GitHub Actions で作成します。
-# Actions タブ → "Build installers" → Run workflow で実行し、完了後に Artifacts からダウンロードします。
+# 費用節約のため、PR や push では自動で動きません（Mac の実行時間は Linux の 10 倍、Windows は 2 倍で計上されます）。
+# Actions タブ → "Build installers" → Run workflow でブランチと対象 OS を選んで実行し、完了後に Artifacts からダウンロードします。
+# 手動実行の既定は Windows だけ。Mac 版が要るときは mac か both を選びます。
+# v で始まるタグ（例 v5.2.0）を push したときは Windows と Mac の両方を作ります。
 name: Build installers
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: '作る OS（Mac は課金 10 倍なので、必要なときだけ mac / both を選んでください）'
+        type: choice
+        options: [win, mac, both]
+        default: win
   push:
     tags: ['v*']
+concurrency:
+  group: build-installers-${{ github.ref }}-${{ inputs.platforms || 'both' }}
+  cancel-in-progress: true
 jobs:
+  # 選んだ OS だけの一覧を作る（選ばなかった OS の高い実行環境を起動しないため）
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          win='{"os":"windows-latest","script":"dist:win"}'
+          mac='{"os":"macos-latest","script":"dist:mac"}'
+          case "${{ inputs.platforms || 'both' }}" in
+            win) list="[$win]" ;;
+            mac) list="[$mac]" ;;
+            *)   list="[$win,$mac]" ;;
+          esac
+          echo "matrix={\"include\":$list}" >> "$GITHUB_OUTPUT"
   build:
+    needs: pick
     strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            script: dist:win
-          - os: macos-latest
-            script: dist:mac
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.pick.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Electron と electron-builder のダウンロードをキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
       - run: npm ci
       - run: npm run ${{ matrix.script }}
         env:
@@ -28,6 +66,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.os }}
+          retention-days: 14
           path: |
             dist/*.exe
             dist/*.dmg

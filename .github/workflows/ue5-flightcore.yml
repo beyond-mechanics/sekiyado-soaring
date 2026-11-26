@@ -1,18 +1,26 @@
 name: UE5 flight core match test
 # UE5 版の飛行コア（純 C++）が JS 版と同じ軌跡を描くかを確かめる。UE 本体は不要。
+# 費用節約：ブランチへの push と PR で二重に動かないよう、push は main だけ。PR の新しい push で古い実行は止める。
 on:
   push:
+    branches: [main]
     paths: ['src/sim/**', 'ue5/**', '.github/workflows/ue5-flightcore.yml']
   pull_request:
     paths: ['src/sim/**', 'ue5/**', '.github/workflows/ue5-flightcore.yml']
   workflow_dispatch:
 
+concurrency:
+  group: ue5-flightcore-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   match:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows（課金 2 倍）は main への push と手動実行のときだけ。PR では Linux だけ。
+        os: ${{ fromJSON((github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
