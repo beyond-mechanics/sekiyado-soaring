@@ -1,0 +1,40 @@
+# blender/ の機体・小物スクリプトを Blender 4.2 LTS と 5.2 LTS で実行し、glTF とプレビュー画像ができるか確かめます。
+name: Blender models
+# Actions の使用量を抑えるため手動実行のみ（bpy 4.2 での確認はローカルで行う）。
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        blender: ['4.2.3', '5.2.2']
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender ${{ matrix.blender }}
+        run: |
+          V=${{ matrix.blender }}
+          sudo apt-get -qq update && sudo apt-get -qq install -y libxi6 libxkbcommon0 libsm6 libgl1 libegl1 > /dev/null
+          wget -q "https://download.blender.org/release/Blender${V%.*}/blender-${V}-linux-x64.tar.xz" -O blender.tar.xz
+          mkdir -p "$RUNNER_TEMP/blender" && tar -xf blender.tar.xz -C "$RUNNER_TEMP/blender" --strip-components=1
+          "$RUNNER_TEMP/blender/blender" --version | head -1
+      - name: Build models and preview renders
+        run: |
+          set -o pipefail
+          mkdir -p out
+          for f in blender/aircraft/*.py blender/props/*.py; do
+            n=$(basename "$f" .py)
+            "$RUNNER_TEMP/blender/blender" -b --factory-startup -P "$f" -- --out out/models --blend "out/$n.blend" \
+              --render "out/$n.png" --views front34,side --samples 8 2>&1 | tee -a build.log | grep -E "^\[|Error|Traceback" || true
+            test -s "out/models/$n.glb" && test -s "out/models/${n}_lod1.glb" && test -s "out/${n}_front34.png"
+          done
+          ! grep -q Traceback build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blender-models-${{ matrix.blender }}
+          path: |
+            build.log
+            out/

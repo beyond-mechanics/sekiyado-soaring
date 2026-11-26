@@ -14,6 +14,8 @@ import { loadGroundDetail } from './world/ground.js';
 import { buildScenery } from './world/scenery.js';
 import { buildClouds } from './world/clouds.js';
 import { makeGlider, makeDimona, makeTowPlane } from './aircraft/models.js';
+import { loadGLB, makeAircraftFromGLB } from './aircraft/gltf-models.js';
+import { buildAirfieldProps } from './world/props.js';
 import { makeCockpit } from './ui/cockpit.js';
 import { Input } from './input.js';
 import { makeAudio } from './audio.js';
@@ -64,6 +66,7 @@ if (quality >= 2) {
 
 // ---------- 状態 ----------
 let data, height = () => 10, textures, scenery, clouds, atmo, models = {}, cockpits = {}, ready = false;
+let airfieldProps = null;
 let s = null, plane = null, tow = null, towModel = null, ropeLine = null, thermalVisual = null;
 let active = false, paused = false, camMode = 0, hudOn = true, path = [], last = 0, uiTime = 0, trailTime = 0, releaseMsg = 0, resultShown = false;
 const CAM_NAMES = ['追尾', 'コックピット', '外部', '地上'];
@@ -103,7 +106,15 @@ async function init() {
     progress(0.72, '樹木と建物（航空写真から検出）'); await tick();
     scenery = buildScenery(scene, data, textures, height, quality, env);
     progress(0.86, '機体'); await tick();
-    models.glider = makeGlider(); models.dimona = makeDimona(); towModel = makeTowPlane();
+    // 機体は Blender 製モデル（assets/data/models、blender/ で再生成）。読めなければ従来の近似形状
+    const loadLods = name => Promise.all([quality > 0 ? loadGLB(`data/models/${name}.glb`) : null, loadGLB(`data/models/${name}_lod1.glb`)])
+      .then(([lod0, lod1]) => ({ lod0, lod1 })).catch(e => { console.warn(`Blender 製モデル ${name} を読み込めませんでした`, e); return null; });
+    const [duo, dimona] = await Promise.all([loadLods('duo_discus_t'), loadLods('super_dimona')]);
+    models.glider = duo ? makeAircraftFromGLB(duo, quality, 'glider') : makeGlider();
+    models.dimona = dimona ? makeAircraftFromGLB(dimona, quality, 'dimona') : makeDimona();
+    towModel = makeTowPlane();
+    progress(0.9, '飛行場の小物'); await tick();
+    airfieldProps = await buildAirfieldProps(scene, height, quality, loadGLB, scenery).catch(e => { console.warn('飛行場の小物を読み込めませんでした', e); return null; });
     for (const k of ['glider', 'dimona']) { scene.add(models[k].group); models[k].group.visible = false; cockpits[k] = makeCockpit(models[k], k); }
     scene.add(towModel.group); towModel.group.visible = false;
     ropeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 20 }, () => new THREE.Vector3())), new THREE.LineBasicMaterial({ color: 0xffe9b0 }));
@@ -203,7 +214,7 @@ function aircraftChanged() {
   if ($('mode').selectedOptions[0]?.disabled) $('mode').value = isMotor ? 'powered' : 'tow';
   $('aircraftNote').textContent = isMotor
     ? '白×赤ストライプ、機首プロペラ、並列2座のモーターグライダー。エンジンで自力離陸し、上空で停止して滑空もできます。'
-    : '細長い主翼と T 字尾翼の複座練習グライダー（汎用形状）。航空機曳航で離陸し、上昇気流を探して飛びます。';
+    : '細長い主翼と T 字尾翼の複座練習グライダー。見た目は Duo Discus T（Blender で作ったモデル）。航空機曳航で離陸し、上昇気流を探して飛びます。';
   if (ready) resetFlight(false);
 }
 
@@ -295,6 +306,7 @@ function frame(now) {
   const camAgl = camera.position.y - height(camera.position.x, camera.position.z);
   env.follow(visual.group.position, visual.group.position.y - height(visual.group.position.x, visual.group.position.z), quality);
   scenery.update(camera.position, now / 1000, Math.atan2(atmo.wdx, -atmo.wdz), atmo.windSpeed);
+  airfieldProps?.update(now / 1000, Math.atan2(atmo.wdx, -atmo.wdz), atmo.windSpeed);
   clouds.update(camera.position);
   thermalVisual.update(settings.guide === '1' && active !== false && $('start').hidden && !tow?.attached, paused ? 0 : dt);
   // 地上付近では霞を少し強く（遠景の地平線を自然に）
