@@ -17,7 +17,8 @@ jobs:
   match:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows（課金 2 倍）は main への push と手動実行のときだけ。PR では Linux だけ。
+        os: ${{ fromJSON((github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

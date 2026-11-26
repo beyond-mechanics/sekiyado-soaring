@@ -102,7 +102,7 @@ npm run dist:mac     # macOS（Mac 上で実行）
 npm run dist:linux   # Linux AppImage
 ```
 
-GitHub にリポジトリを置けば、`.github/workflows/build.yml` で Windows と Mac のインストーラーを作れます（Actions → Build installers → Run workflow。対象 OS を mac / win / both から選べます）。費用節約のため PR や push では自動で動かず、手動実行と `v*` タグの push のときだけ動きます。
+GitHub にリポジトリを置けば、`.github/workflows/build.yml` で Windows と Mac のインストーラーを作れます（Actions → Build installers → Run workflow。対象 OS を win（既定）/ mac / both から選べます。Mac は課金 10 倍なので必要なときだけ）。費用節約のため PR や push では自動で動かず、手動実行と `v*` タグの push のときだけ動きます。
 
 | フォルダー | 内容 |
 |---|---|
