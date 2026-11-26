@@ -1,10 +1,8 @@
 # blender/ の機体・小物スクリプトを Blender 4.2 LTS と 5.2 LTS で実行し、glTF とプレビュー画像ができるか確かめます。
 name: Blender models
+# Actions の使用量を抑えるため手動実行のみ（bpy 4.2 での確認はローカルで行う）。
 on:
   workflow_dispatch:
-  push:
-    branches: ['claude/**']
-    paths: ['blender/**', '.github/workflows/blender-models.yml']
 jobs:
   build:
     strategy:

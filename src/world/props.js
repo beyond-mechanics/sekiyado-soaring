@@ -10,8 +10,9 @@ const world = (along, cross) => ({ x: SH * along + CH * cross, z: -CH * along + 
 // 置き場所（目安。航空写真で滑走路東側の草地を選んだ。実際のピストの位置を教えてもらえれば直す）。
 // 地上発航位置（along -640）の右、滑走路の外。西側は河岸なので置かない
 const PLACES = {
-  tent: [{ along: -650, cross: 58, yaw: Math.PI }],          // 正面（机の側）を滑走路へ向ける
-  trailer: [{ along: -705, cross: 64, yaw: 0 }, { along: -707, cross: 67.5, yaw: 0 }, { along: -704, cross: 71, yaw: 0.04 }],
+  // RWY 18（北端から南向きに離陸）。発航点 x≈-84, z≈-635（along≈+640）の東側の草地に置く
+  tent: [{ along: 640, cross: 42, yaw: Math.PI }],           // 正面（机の側）を滑走路へ向ける
+  trailer: [{ along: 600, cross: 64, yaw: 0 }, { along: 598, cross: 67.5, yaw: 0 }, { along: 601, cross: 71, yaw: 0.04 }],
   windsock: [{ x: 95, z: 120 }]   // scenery.js の吹き流しと同じ位置
 };
 
