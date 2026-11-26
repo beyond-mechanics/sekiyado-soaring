@@ -6,7 +6,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { AtmospherePass } from './world/atmospherePass.js';
 import { Atmosphere } from './sim/atmosphere.js';
-import { AIRCRAFT, RUNWAY_HEADING, createState, launch, stepFlight, runwayCoords, clampTrim } from './sim/flight.js';
+import { AIRCRAFT, RUNWAY_HEADING, TAKEOFF_HEADING, createState, launch, stepFlight, runwayCoords, clampTrim } from './sim/flight.js';
 import { createTow, stepTow, releaseTow, stepDeparture } from './sim/tow.js';
 import { Environment } from './world/sky.js';
 import { loadTerrainData, makeHeight, makeDetailTexture, buildLocalTerrain, buildFarTerrain } from './world/terrain.js';
@@ -170,10 +170,11 @@ function resetFlight(fly = true) {
   const type = settings.aircraft, mode = settings.mode;
   for (const k of ['glider', 'dimona']) models[k].group.visible = k === type;
   plane = models[type];
-  const hs = Math.sin(RUNWAY_HEADING), hc = Math.cos(RUNWAY_HEADING);
+  // 離陸・進入は RWY 18（北端から南向き）
+  const hs = Math.sin(TAKEOFF_HEADING), hc = Math.cos(TAKEOFF_HEADING);
   let opts;
-  if (mode === 'powered' || mode === 'tow') opts = { x: -hs * 640, z: hc * 640, heading: RUNWAY_HEADING, onGround: true };
-  else if (mode === 'approach') opts = { x: -hs * 1900, z: hc * 1900, heading: RUNWAY_HEADING };
+  if (mode === 'powered' || mode === 'tow') opts = { x: -hs * 640, z: hc * 640, heading: TAKEOFF_HEADING, onGround: true };
+  else if (mode === 'approach') opts = { x: -hs * 1900, z: hc * 1900, heading: TAKEOFF_HEADING };
   else opts = { x: 600, z: 1700, heading: -0.31 };
   const g = height(opts.x, opts.z);
   opts.y = g + AIRCRAFT[type].gearH + (opts.onGround ? 0 : mode === 'approach' ? 110 : 600);
@@ -217,7 +218,7 @@ function evaluate() {
   if (!td) return;
   const vs = -td.vs;
   if (vs > 3.5 || Math.abs(td.bank) > 0.35) return finish('機体損傷', `接地時の沈下率 ${vs.toFixed(1)} m/s、バンク ${Math.round(Math.abs(td.bank) * 57.3)}°。速度を保ち、翼を水平にしてフレアをかけましょう。\n${t}`);
-  const where = td.onRunway ? `滑走路内（中心線から ${Math.abs(td.cross).toFixed(0)} m、南端から ${Math.round(td.along + 750)} m）` : '滑走路の外（場外着陸）';
+  const where = td.onRunway ? `滑走路内（中心線から ${Math.abs(td.cross).toFixed(0)} m、北端（RWY 18 の進入端）から ${Math.round(750 - td.along)} m）` : '滑走路の外（場外着陸）';
   const grade = !td.onRunway ? '場外着陸' : vs < 1.0 ? 'ナイスランディング。' : vs < 2.0 ? '着陸成功' : 'ハードランディング';
   finish(grade, `接地 ${where} / 接地速度 ${Math.round(td.speed * 3.6)} km/h / 沈下率 ${vs.toFixed(1)} m/s。\n${t}`);
 }
@@ -260,7 +261,7 @@ function frame(now) {
   if (!active && !$('start').hidden) {
     // メニュー画面：駐機中の機体の周りをゆっくり回る
     const t = now * 0.00008, g = height(0, 0);
-    visual.group.position.set(0, g + s.a.gearH, 0); visual.group.rotation.set(0.0, -RUNWAY_HEADING, 0);
+    visual.group.position.set(0, g + s.a.gearH, 0); visual.group.rotation.set(0.0, -TAKEOFF_HEADING, 0);
     camera.position.set(Math.cos(t) * 14, g + 3.2, Math.sin(t) * 14); camera.up.set(0, 1, 0); camera.lookAt(0, g + 1.4, 0);
     camera.fov = 50;
   } else {

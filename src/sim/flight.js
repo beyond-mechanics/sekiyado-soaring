@@ -17,6 +17,8 @@ export const AIRCRAFT = {
 };
 
 export const RUNWAY_HEADING = -0.131;   // RWY 36 の方位（北から時計回り, rad）
+// 離陸・着陸の向き：普段は RWY 18（北端から南へ）を使う（2026-11 部員の指摘で反転）
+export const TAKEOFF_HEADING = RUNWAY_HEADING + Math.PI;
 export const RUNWAY_LENGTH = 1500, RUNWAY_WIDTH = 90;
 
 export function runwayCoords(x, z) {

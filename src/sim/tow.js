@@ -1,11 +1,11 @@
 // 航空機曳航（自動追従アシスト）。索の張力は計算せず、曳航機の経路にグライダーを追従させる。
-import { RUNWAY_HEADING } from './flight.js';
+import { TAKEOFF_HEADING } from './flight.js';
 
 const ROPE = 55;
 
 export function createTow(height) {
-  const x = -Math.sin(RUNWAY_HEADING) * 600, z = Math.cos(RUNWAY_HEADING) * 600;
-  return { x, z, y: height(x, z) + 1.5, v: 0, heading: RUNWAY_HEADING, bank: 0, pitch: 0, climb: 0,
+  const x = -Math.sin(TAKEOFF_HEADING) * 600, z = Math.cos(TAKEOFF_HEADING) * 600; // 滑走路の手前の端から
+  return { x, z, y: height(x, z) + 1.5, v: 0, heading: TAKEOFF_HEADING, bank: 0, pitch: 0, climb: 0,
     airborne: false, attached: true, departTime: 0, turnDir: 0, time: 0, propSpin: 0 };
 }
 
