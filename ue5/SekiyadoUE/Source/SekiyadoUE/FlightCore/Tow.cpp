@@ -8,8 +8,8 @@ namespace { constexpr double kRope = 55; }
 
 TowState CreateTow(const HeightFn& height) {
   TowState t;
-  t.x = -std::sin(kRunwayHeading) * 600; t.z = std::cos(kRunwayHeading) * 600;
-  t.y = height(t.x, t.z) + 1.5; t.heading = kRunwayHeading;
+  t.x = -std::sin(kTakeoffHeading) * 600; t.z = std::cos(kTakeoffHeading) * 600;
+  t.y = height(t.x, t.z) + 1.5; t.heading = kTakeoffHeading;
   return t;
 }
 

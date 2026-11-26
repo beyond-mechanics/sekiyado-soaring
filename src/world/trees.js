@@ -160,9 +160,12 @@ function sugiTree(cards, seg, size) {
   for (let k = 0; k < cards; k++) {
     const t = Math.pow(rnd(), 0.8), y = yb + (1 - yb) * t, rr = R(t), a = rnd() * 6.28;
     const o = V(Math.cos(a), 0, Math.sin(a)), p = V(o.x * rr * 0.55, y, o.z * rr * 0.55);
-    const tang = V(-o.z, 0, o.x), w = (rr * 1.05 + 0.03) * size;
-    const droop = o.clone().multiplyScalar(0.75).add(V(0, -0.65, 0)).normalize();
-    // 中心から外へ垂れ下がる房（板の上端が幹側）
+    // 杉の枝はほぼ水平で、上の方はやや上向き・下の方だけ少し垂れる。房は小さめにして数を増やし、
+    // 枝の軸まわりに少しひねって、横から見ても板の平らさが目立たないようにする
+    const droop = o.clone().add(V(0, -0.35 + 0.45 * t + (rnd() - 0.5) * 0.15, 0)).normalize();
+    const w = (rr * 0.62 + 0.022) * size;
+    const tang = V(-o.z, 0, o.x).applyAxisAngle(droop, (rnd() - 0.5) * 1.1);
+    // 中心から外へ伸びる枝葉の房（板の上端が幹側）
     const pc = p.clone().addScaledVector(droop, w * 0.7);
     const nf = q => V(q.x, 0, q.z).normalize().add(V(0, 0.55, 0)).normalize();
     b.quad(pc, tang.multiplyScalar(w * 0.8), droop.multiplyScalar(-w * 0.75), 'conifer', nf);
@@ -231,7 +234,7 @@ export function makeTreeKit(quality, env) {
   const q = quality;
   const geos = {
     broad: { near: broadTree([20, 28, 40, 54][q], [2, 3, 4, 5][q], [4, 5, 6, 7][q], [0.16, 0.14, 0.13, 0.13][q]), far: broadTree(14, 0, 4, 0.18) },
-    conifer: { near: sugiTree([18, 24, 32, 42][q], [4, 5, 6, 6][q], 1), far: sugiTree(12, 4, 1.3) },
+    conifer: { near: sugiTree([24, 48, 66, 86][q], [4, 5, 6, 6][q], 1), far: sugiTree(16, 4, 1.35) },
     bamboo: { near: bambooClump([4, 6, 7, 9][q], [4, 6, 7, 8][q], [3, 4, 4, 5][q], 1), far: bambooClump(3, 3, 3, 1.6) },
     // 遠くの裸木は、枝先の細かさを薄い板（茶色に染めた葉の板）で代わりに見せる
     bare: { near: bareTree([2, 3, 3, 3][q], [3, 4, 5, 5][q], [3, 4, 4, 5][q], [3, 4, 6, 8][q]), far: broadTree(8, 3, 3, 0.15) }
@@ -239,11 +242,14 @@ export function makeTreeKit(quality, env) {
   const map = paintAtlas();
   const mat = new THREE.MeshStandardMaterial({ map, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.9 });
   mat.shadowSide = THREE.DoubleSide;
+  // 風揺れ：風下へ少し傾き、ゆっくり揺れる（高いところほど大きく）。葉の板はさらに細かくそよぐ
+  const wind = { uTime: { value: 0 }, uWind: { value: new THREE.Vector2() } };
   mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, wind);
     sh.uniforms.uSunDir = { value: env.sunDir };
     sh.uniforms.uSunRadiance = { value: env.sunRadiance };
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;\nvarying float vLeaf;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;\nvarying float vLeaf;\nuniform float uTime;\nuniform vec2 uWind;')
       // 葉にはインスタンスの色（個体差）を掛け、幹・竹の稈はテクスチャの色のまま
       .replace('#include <color_vertex>', `#include <color_vertex>
         vLeaf = step(uv.x, 0.75);
@@ -257,6 +263,21 @@ export function makeTreeKit(quality, env) {
             lw = instanceMatrix * lw;
           #endif
           vLeafWPos = (modelMatrix * lw).xyz;
+          float hN = clamp(transformed.y, 0.0, 1.2);
+          #ifdef USE_INSTANCING
+            vec3 ip = instanceMatrix[3].xyz; float H = length(instanceMatrix[1].xyz);
+          #else
+            vec3 ip = vec3(0.0); float H = 10.0;
+          #endif
+          float spd = length(uWind), ph = dot(ip.xz, vec2(0.013, 0.017));
+          float gust = 0.65 + 0.35 * sin(uTime * 0.31 + ph * 0.4);
+          float sway = (0.45 + 0.6 * sin(uTime * 1.25 + ph) + 0.25 * sin(uTime * 2.3 + ph * 1.7)) * gust;
+          vec3 off = vec3(uWind.x, 0.0, uWind.y) * (hN * hN * H * 0.0035 * sway);
+          float fl = vLeaf * hN * 0.008 * H * min(1.0, spd / 6.0);
+          float k = dot(transformed, vec3(31.0, 17.0, 23.0)) + ph * 5.0;
+          off += fl * vec3(sin(uTime * 6.3 + k), 0.4 * sin(uTime * 8.1 + k * 1.3), cos(uTime * 5.7 + k * 0.7));
+          mvPosition.xyz += (viewMatrix * vec4(off, 0.0)).xyz;
+          gl_Position = projectionMatrix * mvPosition;
         }`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vLeafWPos;\nvarying float vLeaf;\nuniform vec3 uSunDir;\nuniform vec3 uSunRadiance;')
@@ -279,8 +300,8 @@ export function makeTreeKit(quality, env) {
         }
         #include <opaque_fragment>`);
   };
-  mat.customProgramCacheKey = () => 'treeCards1';
-  return { geos, mat, nearRange: [500, 800, 1200, 1600][q] };
+  mat.customProgramCacheKey = () => 'treeCards2';
+  return { geos, mat, wind, nearRange: [500, 800, 1200, 1600][q] };
 }
 
 // 樹種ごとの葉色（sRGB の HSL）と樹高
@@ -291,7 +312,7 @@ export function treeLook(kind, rand, col, season = { autumn: 0 }) {
     const [h, sat, l] = AUTUMN[Math.floor(rand() * AUTUMN.length)];
     return col.setHSL(h + (rand() - 0.5) * 0.02, sat * (0.85 + rand() * 0.3), l * (0.85 + rand() * 0.25));
   }
-  if (kind === 'conifer') col.setHSL(0.27 + rand() * 0.05, 0.22 + rand() * 0.12, 0.26 + rand() * 0.07);
+  if (kind === 'conifer') col.setHSL(0.25 + rand() * 0.05, 0.16 + rand() * 0.1, 0.17 + rand() * 0.05); // 杉は黒っぽい深緑（冬は少し赤茶ける）
   else if (kind === 'bamboo') col.setHSL(0.2 + rand() * 0.04, 0.3 + rand() * 0.12, 0.33 + rand() * 0.07);
   else col.setHSL(0.22 + rand() * 0.06, 0.38 + rand() * 0.2, 0.25 + rand() * 0.08);
   return col;

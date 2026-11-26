@@ -11,3 +11,7 @@
 
 機体の3Dモデルは写真や一般的な形状を参考にした近似で、実機の CAD データではありません。
 本ソフトは簡易的な飛行モデルによる体験用です。実機訓練や航法には使用できません。
+
+## 地面の PBR 素材（assets/data/pbr）
+
+Poly Haven（https://polyhaven.com）の CC0 素材を 1K に縮小して同梱しています（aerial_grass_rock、brown_mud_leaves_01、asphalt_02。作者 Rob Tuytel）。CC0 のため表示義務はありませんが、出典として記します。詳細は assets/data/pbr/CREDITS.json。

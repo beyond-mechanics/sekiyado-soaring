@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { RUNWAY_HEADING, RUNWAY_LENGTH, inRunway } from '../sim/flight.js';
 import { buildOsmBuildings, makeLandUse, fillWoods } from './osm.js';
 import { makeTreeKit, treeLook, seasonOf } from './trees.js';
+import { makeWaterMask, buildWaterGeometry, buildReeds } from './water.js';
 
 let seed = 151;
 function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
@@ -86,7 +87,10 @@ export function buildScenery(scene, data, textures, height, quality, env) {
     osmBuildings = buildOsmBuildings(group, data.osm, height, makePhotoSampler(textures, meta), quality, baseExclude);
     land = makeLandUse(data.osm, osmBuildings.footprints);
   }
-  const exclude = land ? (x, z) => baseExclude(x, z) || land.noTree(x, z) || !!land.inWood(x, z) : baseExclude;
+  // 水域（OSM の川・池の輪郭。航空写真の川筋と一致する）。木は水の中に置かない
+  const water = data.osm ? makeWaterMask(data.osm, meta) : null;
+  const exclude0 = land ? (x, z) => baseExclude(x, z) || land.noTree(x, z) || !!land.inWood(x, z) : baseExclude;
+  const exclude = water ? (x, z) => exclude0(x, z) || water.inWater(x, z) : exclude0;
 
   // 樹木：写真から検出（詳細域は細かく、広域は粗く）＋旧版の手動配置
   const trees = sc.trees.map(t => ({ ...t, conifer: rand() < 0.3 }));
@@ -188,18 +192,22 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   group.add(sock);
 
   // 川面：空を映す水面（法線マップを動かして波を表現）
-  // v5.1：左岸・中央・右岸の 3 列にして、岸辺の数 m を透明へぼかす（岸の直線的な縁を目立たなくする）
-  const verts = [], uv = [], banks = [], idx = [];
-  sc.river.forEach((p, i) => {
-    const prev = sc.river[Math.max(0, i - 1)], next = sc.river[Math.min(sc.river.length - 1, i + 1)], dx = next.x - prev.x, dz = next.z - prev.z, n = Math.hypot(dx, dz) || 1;
-    for (const side of [-1, 0, 1]) {
-      const x = p.x + dz / n * p.w / 2 * side, z = p.z - dx / n * p.w / 2 * side;
-      verts.push(x, height(x, z) + 0.15, z); uv.push(x / 30, z / 30); banks.push(side === 0 ? 1 : 0);
-    }
-    if (i > 0) { const k = i * 3; idx.push(k - 3, k, k - 2, k - 2, k, k + 1, k - 2, k + 1, k - 1, k - 1, k + 1, k + 2); }
-  });
-  const wg = new THREE.BufferGeometry(); wg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3)); wg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  wg.setAttribute('aBank', new THREE.Float32BufferAttribute(banks, 1)); wg.setIndex(idx); wg.computeVertexNormals();
+  // v5.2：OSM の水域の輪郭から作り、岸はマスクでぼかす（航空写真の川筋に合う）。OSM が無ければ従来の中心線から
+  let wg;
+  if (water) wg = buildWaterGeometry(water, height);
+  else {
+    const verts = [], uv = [], banks = [], idx = [];
+    sc.river.forEach((p, i) => {
+      const prev = sc.river[Math.max(0, i - 1)], next = sc.river[Math.min(sc.river.length - 1, i + 1)], dx = next.x - prev.x, dz = next.z - prev.z, n = Math.hypot(dx, dz) || 1;
+      for (const side of [-1, 0, 1]) {
+        const x = p.x + dz / n * p.w / 2 * side, z = p.z - dx / n * p.w / 2 * side;
+        verts.push(x, height(x, z) + 0.15, z); uv.push(x / 30, z / 30); banks.push(side === 0 ? 1 : 0);
+      }
+      if (i > 0) { const k = i * 3; idx.push(k - 3, k, k - 2, k - 2, k, k + 1, k - 2, k + 1, k - 1, k - 1, k + 1, k + 2); }
+    });
+    wg = new THREE.BufferGeometry(); wg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3)); wg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    wg.setAttribute('aBank', new THREE.Float32BufferAttribute(banks, 1)); wg.setIndex(idx); wg.computeVertexNormals();
+  }
   const N = 128, nd = new Uint8Array(N * N * 4);
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
     const k = (j * N + i) * 4, a = i / N * Math.PI * 2, b = j / N * Math.PI * 2;
@@ -213,20 +221,27 @@ export function buildScenery(scene, data, textures, height, quality, env) {
   const waterTime = { value: 0 };
   wm.onBeforeCompile = (sh) => {
     sh.uniforms.uWaterTime = waterTime;
+    sh.uniforms.uWaterMask = { value: water?.tex || null };
+    sh.uniforms.uWaterRect = { value: water ? new THREE.Vector3(meta.xmin, meta.zmin, 1 / meta.size) : new THREE.Vector3() };
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aBank;\nvarying float vBank;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBank = aBank;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWaterPos;' + (water ? '' : '\nattribute float aBank;\nvarying float vBank;'))
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWaterPos = (modelMatrix * vec4(transformed, 1.0)).xyz;' + (water ? '' : '\nvBank = aBank;'));
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vBank;\nuniform float uWaterTime;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= smoothstep(0.0, 0.26, vBank);')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWaterPos;\nuniform float uWaterTime;\nuniform sampler2D uWaterMask;\nuniform vec3 uWaterRect;' + (water ? '' : '\nvarying float vBank;'))
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + (water
+        ? 'diffuseColor.a *= smoothstep(0.2, 0.7, texture2D(uWaterMask, (vWaterPos.xz - uWaterRect.xy) * uWaterRect.z).r);'
+        : 'diffuseColor.a *= smoothstep(0.0, 0.26, vBank);'))
       .replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace(
         'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
         `vec3 wA = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;
         vec3 wB = texture2D( normalMap, vNormalMapUv * 1.73 + vec2( -uWaterTime * 0.007, uWaterTime * 0.009 ) ).xyz * 2.0 - 1.0;
         vec3 mapN = normalize( vec3( wA.xy + wB.xy * 0.75, wA.z * wB.z ) );`));
   };
-  wm.customProgramCacheKey = () => 'river51';
-  const water = new THREE.Mesh(wg, wm); water.receiveShadow = true; group.add(water);
+  wm.customProgramCacheKey = () => water ? 'river52' : 'river51';
+  const waterMesh = new THREE.Mesh(wg, wm); waterMesh.receiveShadow = true; group.add(waterMesh);
+
+  // 岸のヨシ・ススキ（「標準」以上）
+  const reeds = water ? buildReeds(group, water, height, quality, kit.wind, rand, baseExclude) : [];
 
   return {
     group, treeCount: trees.length, buildingCount: osmBuildings?.count || 0,
@@ -240,7 +255,10 @@ export function buildScenery(scene, data, textures, height, quality, env) {
         const c = m.userData.center, d2 = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2;
         m.visible = d2 < far2 + agl * agl * 2 && (m.userData.lod === 'near') === (d2 < near2);
       }
+      const reed2 = ([0, 1200, 1500, 1800][quality]) ** 2 + agl * agl;
+      for (const m of reeds) { const c = m.userData.center; m.visible = (camPos.x - c.x) ** 2 + (camPos.z - c.z) ** 2 < reed2; }
       nt.offset.set(time * 0.004, time * 0.011); waterTime.value = time;
+      kit.wind.uTime.value = time; kit.wind.uWind.value.set(Math.sin(windTo) * windSpeed, -Math.cos(windTo) * windSpeed);
       // 吹き流し：風下へ向き、風速 15 kt（約 7.7 m/s）で水平
       pivot.rotation.y = -windTo + Math.PI;
       const lift = Math.min(1, windSpeed / 7.7);

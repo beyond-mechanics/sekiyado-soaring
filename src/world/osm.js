@@ -66,7 +66,7 @@ function minAreaRect(pts) {
 // ---------------------------------------------------------------- メッシュを組み立てる入れ物
 
 class Builder {
-  constructor() { this.pos = []; this.nor = []; this.col = []; this.uv = []; }
+  constructor() { this.pos = []; this.nor = []; this.col = []; this.uv = []; this.wh = []; this.base = null; }
   // 三角形を「外向き」の法線 n に合わせた向きで足す
   tri(a, b, c, n, color, uvs) {
     const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -77,6 +77,7 @@ class Builder {
     for (const k of order) {
       this.pos.push(v[k][0], v[k][1], v[k][2]); this.nor.push(n[0], n[1], n[2]);
       this.col.push(color.r, color.g, color.b); this.uv.push(t[k][0], t[k][1]);
+      this.wh.push(this.base === null ? 10 : v[k][1] - this.base); // 壁の根元からの高さ（汚れ用）
     }
   }
   quad(a, b, c, d, n, color, uvs) {
@@ -90,6 +91,7 @@ class Builder {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('aWallH', new THREE.Float32BufferAttribute(this.wh, 1));
     g.computeBoundingSphere();
     return g;
   }
@@ -113,8 +115,34 @@ function windowTexture() {
 }
 const NO_WINDOW_V = 0.9; // テクスチャの v（下が 0 と逆なので上端寄り = 画像の下 1 割の白い壁）
 
-const WALL_HOUSE = [0xe9e4d8, 0xdcd6c8, 0xd2cbbb, 0xc4bcab, 0xe4dfd3, 0x9b8e7c, 0xb9b2a4].map(c => new THREE.Color(c));
-const WALL_WORK = [0xc8cbc8, 0xb8bfc1, 0xd6d6cf, 0xa9b3b6].map(c => new THREE.Color(c));
+// 壁の色：日本の郊外の窯業系サイディング・モルタル（ベージュ・灰・茶）。真っ白は少なめ
+const WALL_HOUSE = [0xd6cfc0, 0xc9c1b0, 0xbdb4a2, 0xb0a691, 0xcfcbc2, 0x93877a, 0xa7a29a, 0x8a7d6c, 0xc2b7a0, 0xdcd7cc].map(c => new THREE.Color(c).multiplyScalar(0.45));
+const WALL_WORK = [0xb7bab6, 0xa6adae, 0xc3c2ba, 0x98a2a5, 0x8f9a92, 0xaeb0a8].map(c => new THREE.Color(c).multiplyScalar(0.55));
+
+// 壁の汚れ：根元の泥はね、雨だれの縦すじ、ムラ（ワールド座標の手続きノイズ。テクスチャは増やさない）
+function addWallWeathering(m) {
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aWallH;\nvarying float vWallH;\nvarying vec3 vWallPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWallH = aWallH;\nvWallPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying float vWallH; varying vec3 vWallPos;
+        float wHash(float n) { return fract(sin(n) * 43758.5453); }
+        float wNoise(float x) { float i = floor(x), f = fract(x); return mix(wHash(i), wHash(i + 1.0), f * f * (3.0 - 2.0 * f)); }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          float s = vWallPos.x * 0.83 + vWallPos.z * 0.56;          // 壁に沿った座標（どの向きの壁でもおおむね変化する）
+          float splash = 1.0 - smoothstep(0.0, 1.0, vWallH);          // 根元 0.8 m の泥はね
+          float streak = smoothstep(0.55, 0.95, wNoise(s * 2.3)) * (0.5 + 0.5 * wNoise(vWallH * 0.7 + s));
+          float mottle = wNoise(s * 0.45 + 17.0) * 0.6 + wNoise(vWallH * 0.9 + s * 0.2) * 0.4;
+          diffuseColor.rgb *= (1.0 - 0.3 * splash) * (1.0 - 0.3 * streak) * (0.88 + 0.16 * mottle);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.92, 0.9, 0.82), splash * 0.5); // 土色に寄せる
+        }`);
+  };
+  m.customProgramCacheKey = () => 'wallWeather1';
+  return m;
+}
 
 // ---------------------------------------------------------------- 建物ツール
 
@@ -154,6 +182,7 @@ export function buildOsmBuildings(group, osm, height, samplePhoto, quality, skip
     const { walls, roofs } = cellOf(cx, cz);
     const wallCol = greenhouse ? col.set(0xdfe6e4) : col.copy((work ? WALL_WORK : WALL_HOUSE)[Math.floor(h * 97) % (work ? WALL_WORK.length : WALL_HOUSE.length)]);
     const wc = wallCol.clone();
+    walls.base = y0;
     const windows = !work && !greenhouse && quality > 0;
     // 壁（輪郭どおり）
     let along = 0;
@@ -218,10 +247,11 @@ export function buildOsmBuildings(group, osm, height, samplePhoto, quality, skip
           [[0.1, NO_WINDOW_V], [0.2, NO_WINDOW_V], [0.2, NO_WINDOW_V], [0.1, NO_WINDOW_V]]);
       }
     }
+    walls.base = null;
     count++;
   }
 
-  const wallMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, map: quality > 0 ? windowTexture() : null });
+  const wallMat = addWallWeathering(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, map: quality > 0 ? windowTexture() : null }));
   const roofMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.05 });
   const meshes = [];
   for (const { walls, roofs } of cells.values()) {

@@ -59,7 +59,7 @@ void AGliderPawn::ResetFlight()
 	S.windSpeed = WindSpeed; S.windFromDeg = WindFromDeg; S.thermalScale = ThermalScale; S.turbulence = Turbulence;
 	Atmo = MakeUnique<sekiyado::Atmosphere>(S);
 	const sekiyado::AircraftParams& A = Aircraft == ESekiyadoAircraft::Dimona ? sekiyado::DimonaParams() : sekiyado::GliderParams();
-	const double H = sekiyado::kRunwayHeading;
+	const double H = sekiyado::kTakeoffHeading; // RWY 18（北端から南向き）
 	bTow = StartMode == ESekiyadoStart::AeroTow && Aircraft == ESekiyadoAircraft::Glider;
 
 	if (bTow)
@@ -70,7 +70,7 @@ void AGliderPawn::ResetFlight()
 	}
 	else if (StartMode == ESekiyadoStart::SelfLaunch)
 	{
-		// 滑走路南端（RWY 36 の進入端）から
+		// 滑走路北端（RWY 18 の進入端）から
 		const double X = -FMath::Sin(H) * 650.0, Z = FMath::Cos(H) * 650.0;
 		State = sekiyado::CreateState(A, X, Height(X, Z) + A.gearH, Z, H, true);
 		State.engine.on = Aircraft == ESekiyadoAircraft::Dimona;

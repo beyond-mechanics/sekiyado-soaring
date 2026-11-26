@@ -195,6 +195,7 @@ export function buildClouds(scene, atmo, height, env, quality, enabled) {
   const puffs = [];
   for (const c of centers) {
     const g0 = height(c.x, c.z) + base;
+    c.base = g0 + c.size * 0.18 - c.size * 0.2; // 立体雲（atmospherePass.js）の雲底
     for (let i = 0; i < per; i++) {
       const a = rnd() * 6.28, r = Math.sqrt(rnd()) * c.size * 0.55;
       const hRatio = Math.pow(rnd(), 1.4), h = hRatio * c.tall;
@@ -259,7 +260,7 @@ export function buildClouds(scene, atmo, height, env, quality, enabled) {
   cloudShadowUniforms.cloudShadowOn.value = THREE.MathUtils.smoothstep(sunDir.y, 0.03, 0.2);
 
   return {
-    group, puffCount: count,
+    group, puffCount: count, centers,
     update(camPos) { if (camPos.distanceToSquared(lastCam) > 15 * 15) sort(camPos); },
     dispose() { scene.remove(group); geo.dispose(); quad.dispose(); mat.dispose(); tex.dispose(); }
   };

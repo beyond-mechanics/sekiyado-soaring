@@ -4,11 +4,13 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { AtmospherePass } from './world/atmospherePass.js';
 import { Atmosphere } from './sim/atmosphere.js';
-import { AIRCRAFT, RUNWAY_HEADING, createState, launch, stepFlight, runwayCoords, clampTrim } from './sim/flight.js';
+import { AIRCRAFT, RUNWAY_HEADING, TAKEOFF_HEADING, createState, launch, stepFlight, runwayCoords, clampTrim } from './sim/flight.js';
 import { createTow, stepTow, releaseTow, stepDeparture } from './sim/tow.js';
 import { Environment } from './world/sky.js';
 import { loadTerrainData, makeHeight, makeDetailTexture, buildLocalTerrain, buildFarTerrain } from './world/terrain.js';
+import { loadGroundDetail } from './world/ground.js';
 import { buildScenery } from './world/scenery.js';
 import { buildClouds } from './world/clouds.js';
 import { makeGlider, makeDimona, makeTowPlane } from './aircraft/models.js';
@@ -48,11 +50,14 @@ const env = new Environment(renderer, scene);
 env.sun.shadow.mapSize.set(quality >= 2 ? 4096 : 2048, quality >= 2 ? 4096 : 2048);
 env.sun.shadow.bias = -0.0002; env.sun.shadow.normalBias = 0.04;
 
-let composer = null;
+let composer = null, atmoPass = null;
 if (quality >= 2) {
   const rt = new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), { type: THREE.HalfFloatType, samples: 4 });
+  rt.depthTexture = new THREE.DepthTexture(rt.width, rt.height); // SSAO・立体雲が深度を読む
   composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
+  atmoPass = new AtmospherePass(camera, quality); // 「高」：SSAO、「最高」：SSAO＋立体雲
+  composer.addPass(atmoPass);
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth / 2, innerHeight / 2), 0.12, 0.45, 0.95));
   composer.addPass(new OutputPass());
 }
@@ -92,7 +97,8 @@ async function init() {
     }
     progress(0.6, '地形メッシュ'); await tick();
     const detailTex = makeDetailTexture(renderer);
-    buildLocalTerrain(scene, data, textures, height, detailTex);
+    const groundDetail = await loadGroundDetail(data, renderer, quality); // 「軽量」では読み込まない
+    buildLocalTerrain(scene, data, textures, height, detailTex, groundDetail);
     buildFarTerrain(scene, data, renderer, quality);
     progress(0.72, '樹木と建物（航空写真から検出）'); await tick();
     scenery = buildScenery(scene, data, textures, height, quality, env);
@@ -121,6 +127,8 @@ function applyWeather() {
   env.set({ hour: Number(settings.timeOfDay), visibility: Number(settings.visibility) });
   clouds?.dispose();
   clouds = buildClouds(scene, atmo, height, env, quality, true);
+  // 「最高」は立体雲（レイマーチング）で描き、板の雲は隠す（雲の影マップはそのまま使う）
+  if (atmoPass && quality >= 3) { atmoPass.setClouds(clouds.centers, env, atmo); clouds.group.visible = !atmoPass.cloudsOn; }
   if (thermalVisual) scene.remove(thermalVisual.group);
   thermalVisual = makeThermalVisual();
 }
@@ -162,10 +170,11 @@ function resetFlight(fly = true) {
   const type = settings.aircraft, mode = settings.mode;
   for (const k of ['glider', 'dimona']) models[k].group.visible = k === type;
   plane = models[type];
-  const hs = Math.sin(RUNWAY_HEADING), hc = Math.cos(RUNWAY_HEADING);
+  // 離陸・進入は RWY 18（北端から南向き）
+  const hs = Math.sin(TAKEOFF_HEADING), hc = Math.cos(TAKEOFF_HEADING);
   let opts;
-  if (mode === 'powered' || mode === 'tow') opts = { x: -hs * 640, z: hc * 640, heading: RUNWAY_HEADING, onGround: true };
-  else if (mode === 'approach') opts = { x: -hs * 1900, z: hc * 1900, heading: RUNWAY_HEADING };
+  if (mode === 'powered' || mode === 'tow') opts = { x: -hs * 640, z: hc * 640, heading: TAKEOFF_HEADING, onGround: true };
+  else if (mode === 'approach') opts = { x: -hs * 1900, z: hc * 1900, heading: TAKEOFF_HEADING };
   else opts = { x: 600, z: 1700, heading: -0.31 };
   const g = height(opts.x, opts.z);
   opts.y = g + AIRCRAFT[type].gearH + (opts.onGround ? 0 : mode === 'approach' ? 110 : 600);
@@ -209,7 +218,7 @@ function evaluate() {
   if (!td) return;
   const vs = -td.vs;
   if (vs > 3.5 || Math.abs(td.bank) > 0.35) return finish('機体損傷', `接地時の沈下率 ${vs.toFixed(1)} m/s、バンク ${Math.round(Math.abs(td.bank) * 57.3)}°。速度を保ち、翼を水平にしてフレアをかけましょう。\n${t}`);
-  const where = td.onRunway ? `滑走路内（中心線から ${Math.abs(td.cross).toFixed(0)} m、南端から ${Math.round(td.along + 750)} m）` : '滑走路の外（場外着陸）';
+  const where = td.onRunway ? `滑走路内（中心線から ${Math.abs(td.cross).toFixed(0)} m、北端（RWY 18 の進入端）から ${Math.round(750 - td.along)} m）` : '滑走路の外（場外着陸）';
   const grade = !td.onRunway ? '場外着陸' : vs < 1.0 ? 'ナイスランディング。' : vs < 2.0 ? '着陸成功' : 'ハードランディング';
   finish(grade, `接地 ${where} / 接地速度 ${Math.round(td.speed * 3.6)} km/h / 沈下率 ${vs.toFixed(1)} m/s。\n${t}`);
 }
@@ -252,7 +261,7 @@ function frame(now) {
   if (!active && !$('start').hidden) {
     // メニュー画面：駐機中の機体の周りをゆっくり回る
     const t = now * 0.00008, g = height(0, 0);
-    visual.group.position.set(0, g + s.a.gearH, 0); visual.group.rotation.set(0.0, -RUNWAY_HEADING, 0);
+    visual.group.position.set(0, g + s.a.gearH, 0); visual.group.rotation.set(0.0, -TAKEOFF_HEADING, 0);
     camera.position.set(Math.cos(t) * 14, g + 3.2, Math.sin(t) * 14); camera.up.set(0, 1, 0); camera.lookAt(0, g + 1.4, 0);
     camera.fov = 50;
   } else {
