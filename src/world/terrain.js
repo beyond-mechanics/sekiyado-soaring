@@ -19,7 +19,27 @@ export async function loadTerrainData(progress) {
   // OpenStreetMap の建物・道路・土地利用（scripts/fetch-osm.mjs で作成。なければ従来どおり写真だけで景観を作る）
   let osm = null;
   try { const r = await fetch('data/osm.json'); if (r.ok) osm = await r.json(); } catch { /* なし */ }
-  return { meta, dem, detail, scenery, far, hires, osm };
+  // 遠景の土地被覆（ESA WorldCover。scripts/build-far-landcover.mjs で作成。なければ従来の推定色）
+  let landcover = null;
+  try {
+    const r = await fetch('data/landcover.json');
+    if (r.ok) {
+      landcover = await r.json();
+      for (const [name, g] of Object.entries(landcover.grids)) g.classes = await readClassPng('data/landcover_' + name + '.png', g.N);
+    }
+  } catch (e) { console.warn('土地被覆マップを読み込めませんでした（遠景は推定色）', e); landcover = null; }
+  return { meta, dem, detail, scenery, far, hires, osm, landcover };
+}
+
+// 8 ビットのグレースケール PNG（分類コード）を読む。色空間の変換で値が変わらないよう、変換なしで展開する。
+async function readClassPng(url, N) {
+  const blob = await (await fetch(url)).blob();
+  const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+  const c = new OffscreenCanvas(N, N), g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0, N, N); bmp.close();
+  const rgba = g.getImageData(0, 0, N, N).data, out = new Uint8Array(N * N);
+  for (let i = 0; i < out.length; i++) out[i] = rgba[i * 4];
+  return out;
 }
 
 function sampleGrid(d, x, z) {
@@ -184,6 +204,47 @@ export function buildLocalTerrain(scene, data, textures, height, detailTex, grou
   return meshes;
 }
 
+// ---- 遠景の土地被覆テクスチャ ----
+// 分類ごとの色は、ビルドスクリプトが同梱の航空写真と重なる所で測った平均色（landcover.json の palette）。
+// 写真に無い分類（雪氷・低木など）だけ下の既定色を使う。
+const LC_DEFAULT = {
+  10: [62, 72, 52], 20: [112, 106, 82], 30: [136, 127, 104], 40: [124, 114, 92], 50: [136, 130, 128],
+  60: [160, 150, 140], 70: [238, 240, 244], 80: [62, 70, 82], 90: [104, 104, 88], 95: [60, 75, 55], 100: [130, 128, 110]
+};
+// 粒のばらつき（1 画素ごと）と、畑・市街地の区画ごとのまだら（約 100 m 角）の強さ
+const LC_GRAIN = { 10: [0.10, 0.12], 40: [0.07, 0.20], 50: [0.06, 0.10], 30: [0.06, 0.10] };
+
+function lcHash(i, j, s) { let h = (i * 374761393 + j * 668265263 + s * 2147483647) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+const srgbToLin = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+const linToSrgb = v => { v = Math.max(0, Math.min(1, v)); return Math.round(255 * (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055)); };
+
+function makeLandcoverTexture(lc, grid, renderer) {
+  const { N, half, classes } = grid, px = 2 * half / N;
+  const pal = {};
+  for (const c of Object.keys(LC_DEFAULT)) pal[c] = (lc.palette?.[c]?.color || LC_DEFAULT[c]).map(srgbToLin);
+  const cell = Math.max(1, Math.round(100 / px));   // 区画のまだらの大きさ（画素）
+  const out = new Uint8Array(N * N * 4);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const k = j * N + i, c = classes[k], base = pal[c] || pal[30];
+    const [ga, pa] = LC_GRAIN[c] || [0.05, 0.06];
+    const pi = Math.floor(i / cell), pj = Math.floor(j / cell);
+    const parcel = lcHash(pi, pj, c) * 2 - 1, grain = lcHash(i, j, 7) * 2 - 1;
+    const m = 1 + parcel * pa + grain * ga;
+    // 畑の区画は緑み（麦・野菜）と茶色（刈り跡・裸地）に少し振る
+    const hue = c === 40 ? (lcHash(pi, pj, 3) - 0.5) * 0.16 : 0;
+    out[k * 4] = linToSrgb(base[0] * m * (1 - hue));
+    out[k * 4 + 1] = linToSrgb(base[1] * m * (1 + hue * 0.6));
+    out[k * 4 + 2] = linToSrgb(base[2] * m * (1 - hue * 0.8));
+    out[k * 4 + 3] = c === 80 ? 255 : c === 90 ? 90 : 0;   // A：水面（反射を強くする）
+  }
+  const t = new THREE.DataTexture(out, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true;
+  return t;
+}
+
 // 遠景の畑・市街地のパッチワーク模様
 function makeFarmTexture(renderer) {
   const S = 1024, c = document.createElement('canvas'); c.width = c.height = S;
@@ -211,7 +272,7 @@ export function buildFarTerrain(scene, data, renderer, quality) {
   const { far, meta } = data;
   const step = quality === 0 ? 2 : 1, N = far.N / step;
   const geo = new THREE.PlaneGeometry(2 * far.half, 2 * far.half, N, N); geo.rotateX(-Math.PI / 2);
-  const p = geo.attributes.position, colors = new Float32Array(p.count * 3), col = new THREE.Color();
+  const p = geo.attributes.position, colors = new Float32Array(p.count * 3), alpine = new Float32Array(p.count * 3), col = new THREE.Color();
   const inset = 120;
   const urbanTokyo = { x: (139.767 - 139.81657) * 90060, z: -(35.681 - 36.01565) * 110574 };
   const C = {
@@ -241,27 +302,65 @@ export function buildFarTerrain(scene, data, renderer, quality) {
       col.lerp(C.forest, THREE.MathUtils.clamp(vnoise(x / 900 - 3, z / 900) - 0.62, 0, 1) * 1.6);
     }
     colors[k * 3] = col.r; colors[k * 3 + 1] = col.g; colors[k * 3 + 2] = col.b;
+    // 土地被覆マップを使うとき：雪・岩・海だけは標高と傾斜から決める
+    alpine[k * 3] = h > 2700 ? THREE.MathUtils.clamp((h - 2700) / 300, 0, 1) : 0;
+    alpine[k * 3 + 1] = THREE.MathUtils.clamp(slope - 0.6, 0, 0.6) * (h > 150 ? 1 : 0);
+    alpine[k * 3 + 2] = h <= 0.5 && slope < 0.01 ? 1 : 0;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('alpine', new THREE.BufferAttribute(alpine, 3));
   const uv = geo.attributes.uv;
   for (let k = 0; k < uv.count; k++) uv.setXY(k, p.getX(k) / 900, p.getZ(k) / 900);
   geo.computeVertexNormals();
   const farm = makeFarmTexture(renderer);
-  const mat = new THREE.MeshStandardMaterial({ map: farm, vertexColors: true, roughness: 0.95 });
+  const lc = data.landcover;
+  const lcTex = lc ? { mid: makeLandcoverTexture(lc, lc.grids.mid, renderer), far: makeLandcoverTexture(lc, lc.grids.far, renderer) } : null;
+  const mat = new THREE.MeshStandardMaterial({ map: farm, vertexColors: !lcTex, roughness: 0.95 });
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, cloudShadowUniforms);
+    if (lcTex) Object.assign(sh.uniforms, {
+      lcMid: { value: lcTex.mid }, lcFar: { value: lcTex.far },
+      lcHalf: { value: new THREE.Vector2(lc.grids.mid.half, lc.grids.far.half) }
+    });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
-      .replace('#include <fog_vertex>', '#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;' + (lcTex ? '\nattribute vec3 alpine;\nvarying vec3 vAlpine;' : ''))
+      .replace('#include <fog_vertex>', '#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;' + (lcTex ? '\nvAlpine = alpine;' : ''));
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;' + CLOUD_SHADOW_PARS)
-      .replace('#include <map_fragment>', `
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;' + CLOUD_SHADOW_PARS + (lcTex ? `
+      varying vec3 vAlpine;
+      uniform sampler2D lcMid, lcFar;
+      uniform vec2 lcHalf;
+      float lcWater = 0.0;` : ''))
+      .replace('#include <map_fragment>', lcTex ? `
+      {
+        // 実際の土地被覆（近い ±25 km は約 24 m/画素、その先 ±150 km は約 146 m/画素）。境目は 3 km かけて混ぜる
+        vec4 cF = texture2D(lcFar, (vWPos.xz + lcHalf.y) / (2.0 * lcHalf.y));
+        vec4 cM = texture2D(lcMid, (vWPos.xz + lcHalf.x) / (2.0 * lcHalf.x));
+        vec2 e = smoothstep(lcHalf.x, lcHalf.x - 3000.0, abs(vWPos.xz));
+        vec4 lc = mix(cF, cM, e.x * e.y);
+        lcWater = lc.a;
+        vec3 c = lc.rgb;
+        // 外洋は川・湖より深い色
+        c = mix(c, vec3(0.022, 0.05, 0.075), vAlpine.z * lcWater);
+        // 急斜面の岩、高山の雪
+        c = mix(c, vec3(0.16, 0.13, 0.1), vAlpine.y);
+        c = mix(c, vec3(0.88, 0.9, 0.94), vAlpine.x);
+        // 畑の区画模様（遠くはミップマップで平らになる）。水面と雪には載せない
+        vec4 farmT = texture2D(map, vMapUv);
+        c *= mix(vec3(1.0), farmT.rgb * 1.7, 0.32 * (1.0 - lcWater) * (1.0 - vAlpine.x));
+        // 航空写真と同じ色の補正（彩度 1.08）
+        float l = dot(c, vec3(0.299, 0.587, 0.114));
+        diffuseColor.rgb = mix(vec3(l), c, 1.08);
+      }` : `
       vec4 farmT = texture2D(map, vMapUv);
       diffuseColor.rgb *= mix(vec3(1.0), farmT.rgb * 1.7, 0.55);`)
+      .replace('#include <roughnessmap_fragment>', lcTex
+        ? '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 0.32, lcWater * (1.0 - vAlpine.x));'
+        : '#include <roughnessmap_fragment>')
       .replace('#include <lights_fragment_begin>', cloudShadowLookup('vWPos') + lightsWithCloudShadow())
       .replace('#include <lights_fragment_end>', CLOUD_SKY_DIM + '#include <lights_fragment_end>');
   };
-  mat.customProgramCacheKey = () => 'farTerrain51';
+  mat.customProgramCacheKey = () => 'farTerrain53' + (lcTex ? 'lc' : '');
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = false; mesh.renderOrder = -1;
   scene.add(mesh);
